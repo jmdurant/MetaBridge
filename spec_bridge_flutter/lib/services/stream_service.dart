@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../data/models/meeting_config.dart';
 import '../data/models/stream_status.dart';
+import 'bluetooth_audio_service.dart';
 import 'glasses_service.dart';
 import 'jitsi_service.dart';
 
@@ -11,6 +12,7 @@ import 'jitsi_service.dart';
 class StreamService extends ChangeNotifier {
   final GlassesService _glassesService;
   final JitsiService _jitsiService;
+  final BluetoothAudioService _bluetoothAudioService;
 
   StreamState _currentState = const StreamState();
 
@@ -18,7 +20,11 @@ class StreamService extends ChangeNotifier {
   StreamSubscription? _glassesEventSubscription;
   VoidCallback? _jitsiListener;
 
-  StreamService(this._glassesService, this._jitsiService) {
+  StreamService(
+    this._glassesService,
+    this._jitsiService,
+    this._bluetoothAudioService,
+  ) {
     _listenToServices();
   }
 
@@ -50,16 +56,24 @@ class StreamService extends ChangeNotifier {
       _updateState(_currentState.copyWith(status: StreamStatus.starting));
       _frameCount = 0;
 
-      // 1. Start glasses video capture
+      // 1. Route audio to glasses if available (best effort)
+      final audioRouted = await _bluetoothAudioService.autoRouteToGlasses();
+      if (audioRouted) {
+        debugPrint('StreamService: Audio routed to glasses');
+      } else {
+        debugPrint('StreamService: Using default audio device');
+      }
+
+      // 2. Start glasses video capture
       final glassesStarted = await _glassesService.startStreaming();
       if (!glassesStarted) {
         throw Exception('Failed to start glasses video capture');
       }
 
-      // 2. Join Jitsi meeting
+      // 3. Join Jitsi meeting
       await _jitsiService.joinMeeting(config);
 
-      // 3. Start counting frames for status display
+      // 4. Start counting frames for status display
       _glassesEventSubscription = _glassesService.previewFrameStream.listen((_) {
         _frameCount++;
         if (_frameCount % 30 == 0) {
@@ -67,13 +81,14 @@ class StreamService extends ChangeNotifier {
         }
       });
 
-      // 4. Enable screen share after a short delay (to let meeting establish)
+      // 5. Enable screen share after a short delay (to let meeting establish)
       await Future.delayed(const Duration(seconds: 2));
       await _jitsiService.toggleScreenShare();
 
       _updateState(_currentState.copyWith(
         status: StreamStatus.streaming,
         isInMeeting: true,
+        isGlassesAudioActive: audioRouted,
       ));
     } catch (e) {
       _updateState(_currentState.copyWith(
@@ -99,10 +114,14 @@ class StreamService extends ChangeNotifier {
       // Leave Jitsi meeting
       await _jitsiService.leaveMeeting();
 
+      // Clear audio routing
+      await _bluetoothAudioService.clearAudioDevice();
+
       _updateState(const StreamState(
         status: StreamStatus.stopped,
         isInMeeting: false,
         framesSent: 0,
+        isGlassesAudioActive: false,
       ));
     } catch (e) {
       _updateState(_currentState.copyWith(

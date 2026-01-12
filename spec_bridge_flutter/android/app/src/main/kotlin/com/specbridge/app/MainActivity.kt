@@ -7,12 +7,16 @@ import io.flutter.embedding.engine.FlutterEngine
 
 class MainActivity : FlutterActivity() {
     private lateinit var metaWearablesPlugin: MetaWearablesPlugin
+    private lateinit var bluetoothAudioPlugin: BluetoothAudioPlugin
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
         // Initialize Meta Wearables Plugin
         metaWearablesPlugin = MetaWearablesPlugin(this, flutterEngine.dartExecutor.binaryMessenger)
+
+        // Initialize Bluetooth Audio Plugin
+        bluetoothAudioPlugin = BluetoothAudioPlugin(this, flutterEngine.dartExecutor.binaryMessenger)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -37,6 +41,7 @@ class MainActivity : FlutterActivity() {
 
     override fun onDestroy() {
         metaWearablesPlugin.dispose()
+        bluetoothAudioPlugin.dispose()
         super.onDestroy()
     }
 }

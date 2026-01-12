@@ -15,12 +15,14 @@ class StreamState extends Equatable {
   final StreamStatus status;
   final bool isInMeeting;
   final int framesSent;
+  final bool isGlassesAudioActive;
   final String? errorMessage;
 
   const StreamState({
     this.status = StreamStatus.idle,
     this.isInMeeting = false,
     this.framesSent = 0,
+    this.isGlassesAudioActive = false,
     this.errorMessage,
   });
 
@@ -31,18 +33,20 @@ class StreamState extends Equatable {
     StreamStatus? status,
     bool? isInMeeting,
     int? framesSent,
+    bool? isGlassesAudioActive,
     String? errorMessage,
   }) {
     return StreamState(
       status: status ?? this.status,
       isInMeeting: isInMeeting ?? this.isInMeeting,
       framesSent: framesSent ?? this.framesSent,
+      isGlassesAudioActive: isGlassesAudioActive ?? this.isGlassesAudioActive,
       errorMessage: errorMessage ?? this.errorMessage,
     );
   }
 
   @override
-  List<Object?> get props => [status, isInMeeting, framesSent, errorMessage];
+  List<Object?> get props => [status, isInMeeting, framesSent, isGlassesAudioActive, errorMessage];
 }
 
 /// Event emitted from native platform channel

@@ -4,6 +4,7 @@ import UIKit
 @main
 @objc class AppDelegate: FlutterAppDelegate {
     private var metaDATPlugin: MetaDATPlugin?
+    private var bluetoothAudioPlugin: BluetoothAudioPlugin?
 
     override func application(
         _ application: UIApplication,
@@ -13,6 +14,9 @@ import UIKit
 
         // Initialize Meta DAT Plugin
         metaDATPlugin = MetaDATPlugin(messenger: controller.binaryMessenger)
+
+        // Initialize Bluetooth Audio Plugin
+        bluetoothAudioPlugin = BluetoothAudioPlugin(messenger: controller.binaryMessenger)
 
         GeneratedPluginRegistrant.register(with: self)
         return super.application(application, didFinishLaunchingWithOptions: launchOptions)
