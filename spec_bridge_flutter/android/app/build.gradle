@@ -1,0 +1,91 @@
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+    dependencies {
+        classpath 'com.panaxeo:shadow-aar:0.1.1'
+    }
+}
+
+plugins {
+    id 'com.android.application'
+    id 'kotlin-android'
+    id 'dev.flutter.flutter-gradle-plugin'
+}
+
+apply plugin: 'com.panaxeo.shadow-aar'
+
+android {
+    namespace = "com.specbridge.app"
+    compileSdk = 36
+    ndkVersion = "29.0.14206865"
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
+    }
+
+    kotlinOptions {
+        jvmTarget = "21"
+    }
+
+    defaultConfig {
+        applicationId = "com.specbridge.app"
+        minSdk = 31
+        targetSdk = 36
+        versionCode = flutter.versionCode
+        versionName = flutter.versionName
+    }
+
+    buildTypes {
+        release {
+            signingConfig = signingConfigs.debug
+            minifyEnabled = false
+            shrinkResources = false
+        }
+        debug {
+            minifyEnabled = false
+            shrinkResources = false
+        }
+    }
+
+    packaging {
+        resources {
+            excludes += '/META-INF/{AL2.0,LGPL2.1}'
+        }
+        jniLibs {
+            pickFirsts += 'lib/**/libc++_shared.so'
+            pickFirsts += 'lib/**/libfbjni.so'
+        }
+    }
+}
+
+flutter {
+    source = '../..'
+}
+
+// Shadow-aar: relocate conflicting Facebook classes in Meta SDK
+shadowAar {
+    repackages.put("com.facebook.jni", "shadow.meta.fbjni")
+    repackages.put("com.facebook.common", "shadow.meta.fbcommon")
+    repackages.put("com.facebook.proguard", "shadow.meta.proguard")
+}
+
+configurations.all {
+    // Exclude desktop lifecycle that conflicts with Android lifecycle
+    exclude group: 'androidx.lifecycle', module: 'lifecycle-runtime-desktop'
+}
+
+dependencies {
+    // Meta Wearables SDK - use implementationEmbed for shadowing
+    implementationEmbed 'com.meta.wearable:mwdat-core:0.3.0'
+    implementationEmbed 'com.meta.wearable:mwdat-camera:0.3.0'
+
+    // Coroutines for Kotlin Flow
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'
+
+    // Lifecycle for coroutine scope
+    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.8.7'
+}

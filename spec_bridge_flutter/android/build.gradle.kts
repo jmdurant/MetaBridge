@@ -1,3 +1,14 @@
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+    dependencies {
+        classpath("com.panaxeo:shadow-aar:0.1.0")
+    }
+}
+
 allprojects {
     repositories {
         google()

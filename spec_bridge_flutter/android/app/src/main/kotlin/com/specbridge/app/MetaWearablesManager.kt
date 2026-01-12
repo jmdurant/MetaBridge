@@ -1,10 +1,13 @@
 package com.specbridge.app
 
 import android.content.Context
-import com.meta.wearable.Wearables
-import com.meta.wearable.Permission
-import com.meta.wearable.RegistrationState
-import com.meta.wearable.Device
+import com.meta.wearable.dat.core.Wearables
+import com.meta.wearable.dat.core.types.Permission
+import com.meta.wearable.dat.core.types.PermissionStatus
+import com.meta.wearable.dat.core.types.RegistrationState
+import com.meta.wearable.dat.core.types.DeviceIdentifier
+import com.meta.wearable.dat.core.selectors.AutoDeviceSelector
+import com.meta.wearable.dat.core.selectors.DeviceSelector
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -25,6 +28,7 @@ enum class ConnectionState {
 
 /**
  * Manager for Meta Wearables SDK interactions on Android
+ * Based on the official CameraAccess sample app
  */
 class MetaWearablesManager(private val context: Context) {
 
@@ -33,14 +37,19 @@ class MetaWearablesManager(private val context: Context) {
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
+    private val _hasActiveDevice = MutableStateFlow(false)
+    val hasActiveDevice: StateFlow<Boolean> = _hasActiveDevice.asStateFlow()
+
     private var isConfigured = false
-    private var currentDevice: Device? = null
+
+    // AutoDeviceSelector automatically selects the first available wearable device
+    val deviceSelector: DeviceSelector = AutoDeviceSelector()
 
     // MARK: - Configuration
 
-    suspend fun configure(): Boolean {
+    fun configure(): Boolean {
         return try {
-            // Initialize the SDK
+            // Initialize the SDK - must be called before any other Wearables APIs
             Wearables.initialize(context)
             isConfigured = true
 
@@ -48,18 +57,18 @@ class MetaWearablesManager(private val context: Context) {
             scope.launch {
                 Wearables.registrationState.collect { state ->
                     _connectionState.value = when (state) {
-                        RegistrationState.REGISTERED -> ConnectionState.CONNECTED
-                        RegistrationState.REGISTERING -> ConnectionState.CONNECTING
-                        RegistrationState.UNREGISTERED -> ConnectionState.DISCONNECTED
+                        is RegistrationState.Registered -> ConnectionState.CONNECTED
+                        is RegistrationState.Registering -> ConnectionState.CONNECTING
+                        is RegistrationState.Unavailable -> ConnectionState.DISCONNECTED
                         else -> ConnectionState.DISCONNECTED
                     }
                 }
             }
 
-            // Observe available devices
+            // Observe available devices via device selector
             scope.launch {
-                Wearables.devices.collect { devices ->
-                    currentDevice = devices.firstOrNull()
+                deviceSelector.activeDevice(Wearables.devices).collect { device ->
+                    _hasActiveDevice.value = device != null
                 }
             }
 
@@ -71,7 +80,7 @@ class MetaWearablesManager(private val context: Context) {
 
     // MARK: - Registration
 
-    suspend fun startRegistration(): Boolean {
+    fun startRegistration(): Boolean {
         if (!isConfigured) return false
 
         return try {
@@ -84,7 +93,7 @@ class MetaWearablesManager(private val context: Context) {
         }
     }
 
-    suspend fun handleCallback(url: String): Boolean {
+    fun handleCallback(url: String): Boolean {
         // On Android, the callback is handled automatically by the SDK
         // when the Meta AI app returns. This method is for compatibility
         // with the iOS implementation.
@@ -95,42 +104,33 @@ class MetaWearablesManager(private val context: Context) {
 
     suspend fun checkCameraPermission(): String {
         return try {
-            val status = Wearables.checkPermissionStatus(Permission.CAMERA)
-            when {
-                status.isGranted -> "granted"
-                status.isDenied -> "denied"
-                else -> "notDetermined"
-            }
+            val result = Wearables.checkPermissionStatus(Permission.CAMERA)
+            result.getOrNull()?.let { status ->
+                when (status) {
+                    PermissionStatus.Granted -> "granted"
+                    PermissionStatus.Denied -> "denied"
+                }
+            } ?: "unknown"
         } catch (e: Exception) {
             "unknown"
         }
     }
 
+    // Note: Full permission request requires ActivityResultLauncher setup in MainActivity
+    // This is a simplified version that returns current status
     suspend fun requestCameraPermission(): String {
-        return try {
-            // Use the RequestPermissionContract for camera permission
-            val contract = Wearables.RequestPermissionContract()
-            // Note: This requires ActivityResultLauncher setup in the activity
-            // For now, return the current status
-            checkCameraPermission()
-        } catch (e: Exception) {
-            "denied"
-        }
+        // In a full implementation, this would use Wearables.RequestPermissionContract()
+        // with an ActivityResultLauncher. For now, just return current status.
+        return checkCameraPermission()
     }
-
-    // MARK: - Streaming
-
-    fun getDevice(): Device? = currentDevice
 
     // MARK: - Cleanup
 
     fun disconnect() {
-        scope.launch {
-            try {
-                Wearables.startUnregistration(context)
-            } catch (e: Exception) {
-                // Ignore unregistration errors
-            }
+        try {
+            Wearables.startUnregistration(context)
+        } catch (e: Exception) {
+            // Ignore unregistration errors
         }
         _connectionState.value = ConnectionState.DISCONNECTED
     }

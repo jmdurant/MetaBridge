@@ -1,16 +1,21 @@
 package com.specbridge.app
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.ImageFormat
 import android.graphics.Rect
 import android.graphics.YuvImage
-import com.meta.wearable.Wearables
-import com.meta.wearable.StreamSession
-import com.meta.wearable.VideoQuality
-import com.meta.wearable.StreamSessionState
+import com.meta.wearable.dat.core.Wearables
+import com.meta.wearable.dat.camera.StreamSession
+import com.meta.wearable.dat.camera.startStreamSession
+import com.meta.wearable.dat.camera.types.StreamConfiguration
+import com.meta.wearable.dat.camera.types.StreamSessionState
+import com.meta.wearable.dat.camera.types.VideoFrame
+import com.meta.wearable.dat.camera.types.VideoQuality
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -24,13 +29,17 @@ import java.io.ByteArrayOutputStream
 
 /**
  * Manages video streaming session from Meta glasses on Android
+ * Based on the official CameraAccess sample app
  */
 class StreamSessionManager(
+    private val context: Context,
     private val wearablesManager: MetaWearablesManager
 ) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     private var streamSession: StreamSession? = null
+    private var videoJob: Job? = null
+    private var stateJob: Job? = null
 
     private val _frameFlow = MutableSharedFlow<ByteArray>(extraBufferCapacity = 1)
     val frameFlow: SharedFlow<ByteArray> = _frameFlow.asSharedFlow()
@@ -45,7 +54,7 @@ class StreamSessionManager(
 
     // MARK: - Streaming Control
 
-    suspend fun startStreaming(width: Int, height: Int, frameRate: Int): Boolean {
+    fun startStreaming(width: Int, height: Int, frameRate: Int): Boolean {
         if (streamSession != null) {
             return false // Already streaming
         }
@@ -61,35 +70,34 @@ class StreamSessionManager(
                 else -> VideoQuality.LOW                // 360×640
             }
 
-            // Create stream session
-            streamSession = Wearables.startStreamSession(
-                quality = quality,
-                frameRate = frameRate
+            // Create stream session using the extension function
+            val session = Wearables.startStreamSession(
+                context,
+                wearablesManager.deviceSelector,
+                StreamConfiguration(videoQuality = quality, frameRate)
             )
+            streamSession = session
 
             // Observe session state
-            scope.launch {
-                streamSession?.state?.collect { state ->
+            stateJob = scope.launch {
+                session.state.collect { state ->
                     _statusFlow.value = when (state) {
                         StreamSessionState.STARTING -> "starting"
-                        StreamSessionState.STARTED -> "starting"
                         StreamSessionState.STREAMING -> "streaming"
                         StreamSessionState.STOPPING -> "stopping"
                         StreamSessionState.STOPPED -> "stopped"
-                        StreamSessionState.CLOSED -> "stopped"
                         else -> "unknown"
                     }
                 }
             }
 
             // Collect video frames
-            scope.launch {
-                streamSession?.videoStream?.collect { frame ->
+            videoJob = scope.launch {
+                session.videoStream.collect { frame ->
                     processFrame(frame)
                 }
             }
 
-            _statusFlow.value = "streaming"
             true
         } catch (e: Exception) {
             _statusFlow.value = "error"
@@ -98,6 +106,10 @@ class StreamSessionManager(
     }
 
     fun stopStreaming() {
+        videoJob?.cancel()
+        videoJob = null
+        stateJob?.cancel()
+        stateJob = null
         streamSession?.close()
         streamSession = null
         _statusFlow.value = "stopped"
@@ -105,13 +117,28 @@ class StreamSessionManager(
 
     // MARK: - Frame Processing
 
-    private fun processFrame(frame: Any) {
+    private fun processFrame(videoFrame: VideoFrame) {
         frameCount++
 
         try {
-            // Convert frame to JPEG
-            val jpegData = convertToJpeg(frame)
-            if (jpegData != null) {
+            // VideoFrame contains raw I420 video data in a ByteBuffer
+            val buffer = videoFrame.buffer
+            val dataSize = buffer.remaining()
+            val byteArray = ByteArray(dataSize)
+
+            // Save current position
+            val originalPosition = buffer.position()
+            buffer.get(byteArray)
+            // Restore position
+            buffer.position(originalPosition)
+
+            // Convert I420 to NV21 format which is supported by Android's YuvImage
+            val nv21 = convertI420toNV21(byteArray, videoFrame.width, videoFrame.height)
+            val image = YuvImage(nv21, ImageFormat.NV21, videoFrame.width, videoFrame.height, null)
+
+            ByteArrayOutputStream().use { stream ->
+                image.compressToJpeg(Rect(0, 0, videoFrame.width, videoFrame.height), jpegQuality, stream)
+                val jpegData = stream.toByteArray()
                 _frameFlow.tryEmit(jpegData)
             }
         } catch (e: Exception) {
@@ -119,45 +146,21 @@ class StreamSessionManager(
         }
     }
 
-    private fun convertToJpeg(frame: Any): ByteArray? {
-        // The frame type depends on the SDK implementation
-        // This is a placeholder that handles common frame types
+    // Convert I420 (YYYYYYYY:UUVV) to NV21 (YYYYYYYY:VUVU)
+    private fun convertI420toNV21(input: ByteArray, width: Int, height: Int): ByteArray {
+        val output = ByteArray(input.size)
+        val size = width * height
+        val quarter = size / 4
 
-        return when (frame) {
-            is ByteArray -> {
-                // Assume it's already JPEG or raw bytes
-                if (isJpeg(frame)) {
-                    frame
-                } else {
-                    // Try to decode and re-encode as JPEG
-                    try {
-                        val bitmap = BitmapFactory.decodeByteArray(frame, 0, frame.size)
-                        bitmapToJpeg(bitmap)
-                    } catch (e: Exception) {
-                        null
-                    }
-                }
-            }
-            is Bitmap -> {
-                bitmapToJpeg(frame)
-            }
-            else -> {
-                // Unknown frame type
-                null
-            }
+        // Y plane is the same
+        input.copyInto(output, 0, 0, size)
+
+        // Interleave U and V planes (V first for NV21)
+        for (n in 0 until quarter) {
+            output[size + n * 2] = input[size + quarter + n] // V first
+            output[size + n * 2 + 1] = input[size + n] // U second
         }
-    }
-
-    private fun isJpeg(data: ByteArray): Boolean {
-        return data.size >= 2 &&
-                data[0] == 0xFF.toByte() &&
-                data[1] == 0xD8.toByte()
-    }
-
-    private fun bitmapToJpeg(bitmap: Bitmap): ByteArray {
-        val outputStream = ByteArrayOutputStream()
-        bitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality, outputStream)
-        return outputStream.toByteArray()
+        return output
     }
 
     // MARK: - Cleanup

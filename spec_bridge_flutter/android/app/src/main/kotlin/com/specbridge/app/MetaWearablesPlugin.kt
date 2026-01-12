@@ -173,7 +173,7 @@ class MetaWearablesPlugin(
                 jitsiBridge!!.connect()
 
                 // Initialize stream session manager
-                streamManager = StreamSessionManager(manager)
+                streamManager = StreamSessionManager(activity, manager)
 
                 // Observe frames
                 launch {
