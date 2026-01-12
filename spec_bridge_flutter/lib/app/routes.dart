@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../data/models/meeting_config.dart';
+import '../presentation/screens/settings/settings_screen.dart';
 import '../presentation/screens/splash/splash_screen.dart';
 import '../presentation/screens/setup/setup_screen.dart';
 import '../presentation/screens/streaming/streaming_screen.dart';
@@ -32,6 +33,11 @@ GoRouter createRouter() {
           return StreamingScreen(config: config);
         },
       ),
+      GoRoute(
+        path: '/settings',
+        name: 'settings',
+        builder: (context, state) => const SettingsScreen(),
+      ),
     ],
     errorBuilder: (context, state) => Scaffold(
       body: Center(
@@ -48,4 +54,6 @@ extension GoRouterExtension on BuildContext {
   void goToStreaming(MeetingConfig config) {
     GoRouter.of(this).go('/streaming', extra: config);
   }
+
+  void goToSettings() => GoRouter.of(this).push('/settings');
 }

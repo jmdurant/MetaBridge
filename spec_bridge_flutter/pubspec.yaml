@@ -20,6 +20,7 @@ dependencies:
 
   # Jitsi Integration
   jitsi_meet_flutter_sdk: ^11.6.0
+  flutter_inappwebview: 6.2.0-beta.2  # WebView fallback for Jitsi
 
   # Local Storage
   shared_preferences: ^2.5.4

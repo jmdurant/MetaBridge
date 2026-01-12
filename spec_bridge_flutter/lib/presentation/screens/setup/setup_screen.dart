@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import '../../../app/routes.dart';
 import '../../../data/models/glasses_state.dart';
 import '../../../data/models/meeting_config.dart';
 import '../../../services/glasses_service.dart';
 import '../../../services/permission_service.dart';
+import '../../../services/settings_service.dart';
 
 /// Setup screen for glasses connection and meeting configuration
 class SetupScreen extends StatefulWidget {
@@ -27,6 +29,15 @@ class _SetupScreenState extends State<SetupScreen> {
   void initState() {
     super.initState();
     _checkPermissions();
+    _loadSettings();
+  }
+
+  void _loadSettings() {
+    final settings = context.read<SettingsService>().settings;
+    _serverController.text = settings.defaultServer;
+    if (settings.displayName != null) {
+      _nameController.text = settings.displayName!;
+    }
   }
 
   @override
@@ -126,6 +137,12 @@ class _SetupScreenState extends State<SetupScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('SpecBridge Setup'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: () => context.goToSettings(),
+          ),
+        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),

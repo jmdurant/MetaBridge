@@ -7,8 +7,10 @@ import 'app/routes.dart';
 import 'services/deep_link_service.dart';
 import 'services/glasses_service.dart';
 import 'services/jitsi_service.dart';
+import 'services/jitsi_webview_service.dart';
 import 'services/permission_service.dart';
 import 'services/platform_channels/meta_dat_channel.dart';
+import 'services/settings_service.dart';
 import 'services/stream_service.dart';
 
 void main() async {
@@ -17,6 +19,9 @@ void main() async {
   // Initialize services that need early setup
   final deepLinkService = DeepLinkService();
   await deepLinkService.initialize();
+
+  final settingsService = SettingsService();
+  await settingsService.load();
 
   // Create platform channel
   final metaDATChannel = MetaDATChannelImpl();
@@ -30,6 +35,9 @@ void main() async {
         // Permission service (stateless utility)
         Provider<PermissionService>(create: (_) => PermissionService()),
 
+        // Settings service (initialized early)
+        ChangeNotifierProvider<SettingsService>.value(value: settingsService),
+
         // Deep link service (initialized early)
         ChangeNotifierProvider<DeepLinkService>.value(value: deepLinkService),
 
@@ -40,8 +48,13 @@ void main() async {
               previous ?? GlassesService(channel),
         ),
 
-        // Jitsi service
+        // Jitsi SDK service
         ChangeNotifierProvider<JitsiService>(create: (_) => JitsiService()),
+
+        // Jitsi WebView service (fallback)
+        ChangeNotifierProvider<JitsiWebViewService>(
+          create: (_) => JitsiWebViewService(),
+        ),
 
         // Stream service (depends on glasses and jitsi)
         ChangeNotifierProxyProvider2<GlassesService, JitsiService,
