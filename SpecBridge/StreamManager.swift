@@ -6,17 +6,30 @@ import AVFoundation
 import MWDATCore
 import MWDATCamera
 
+/// Output mode for the glasses video stream
+enum StreamOutputMode {
+    case twitch
+    case jitsi
+    case both
+}
+
 @MainActor
 class StreamManager: ObservableObject {
     @Published var currentFrame: UIImage?
     @Published var status = "Ready to Stream"
     @Published var isStreaming = false
-    
+
     private var streamSession: StreamSession?
     private var token: AnyListenerToken?
-    
+
+    /// Current output mode
+    var outputMode: StreamOutputMode = .twitch
+
     // Reference to Twitch Manager
     var twitchManager: TwitchManager?
+
+    // Reference to Jitsi Frame Injector
+    var jitsiFrameInjector: JitsiFrameInjector?
     
     private func configureAudio() {
         let session = AVAudioSession.sharedInstance()
@@ -69,14 +82,25 @@ class StreamManager: ObservableObject {
                     self?.isStreaming = true
                 }
             }
-            
-            // 2. Extract the RAW buffer for Twitch
-            // FIX: Accessed directly (no 'if let' needed for sampleBuffer)
+
+            // 2. Extract the RAW buffer
             let buffer = frame.sampleBuffer
-            
-            // Hand off to TwitchManager (wrapped in Task to jump threads safely)
+
+            // 3. Route to output destinations based on mode
             Task { @MainActor in
-                self?.twitchManager?.processVideoFrame(buffer)
+                guard let self = self else { return }
+
+                switch self.outputMode {
+                case .twitch:
+                    self.twitchManager?.processVideoFrame(buffer)
+
+                case .jitsi:
+                    self.jitsiFrameInjector?.injectFrame(buffer)
+
+                case .both:
+                    self.twitchManager?.processVideoFrame(buffer)
+                    self.jitsiFrameInjector?.injectFrame(buffer)
+                }
             }
         }
         
@@ -87,10 +111,20 @@ class StreamManager: ObservableObject {
     func stopStreaming() async {
         status = "Stopping..."
         await streamSession?.stop()
-        
-        // Ensure Twitch stops when glasses stop
-        await twitchManager?.stopBroadcast()
-        
+
+        // Stop outputs based on mode
+        switch outputMode {
+        case .twitch:
+            await twitchManager?.stopBroadcast()
+
+        case .jitsi:
+            jitsiFrameInjector?.stop()
+
+        case .both:
+            await twitchManager?.stopBroadcast()
+            jitsiFrameInjector?.stop()
+        }
+
         status = "Ready to Stream"
         isStreaming = false
         currentFrame = nil

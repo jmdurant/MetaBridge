@@ -1,0 +1,133 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+
+import '../data/models/meeting_config.dart';
+import '../data/models/stream_status.dart';
+import 'glasses_service.dart';
+import 'jitsi_service.dart';
+
+/// Service that orchestrates glasses video streaming to Jitsi meetings
+class StreamService extends ChangeNotifier {
+  final GlassesService _glassesService;
+  final JitsiService _jitsiService;
+
+  StreamState _currentState = const StreamState();
+
+  int _frameCount = 0;
+  StreamSubscription? _glassesEventSubscription;
+  VoidCallback? _jitsiListener;
+
+  StreamService(this._glassesService, this._jitsiService) {
+    _listenToServices();
+  }
+
+  /// Current stream state
+  StreamState get currentState => _currentState;
+
+  /// Stream of preview frames
+  Stream<Uint8List> get previewFrameStream => _glassesService.previewFrameStream;
+
+  void _listenToServices() {
+    // Listen to Jitsi meeting state
+    _jitsiListener = () {
+      final meetingState = _jitsiService.currentState;
+      _updateState(_currentState.copyWith(
+        isInMeeting: meetingState.isInMeeting,
+      ));
+    };
+    _jitsiService.addListener(_jitsiListener!);
+  }
+
+  void _updateState(StreamState newState) {
+    _currentState = newState;
+    notifyListeners();
+  }
+
+  /// Start streaming glasses video to a Jitsi meeting
+  Future<void> startStreaming(MeetingConfig config) async {
+    try {
+      _updateState(_currentState.copyWith(status: StreamStatus.starting));
+      _frameCount = 0;
+
+      // 1. Start glasses video capture
+      final glassesStarted = await _glassesService.startStreaming();
+      if (!glassesStarted) {
+        throw Exception('Failed to start glasses video capture');
+      }
+
+      // 2. Join Jitsi meeting
+      await _jitsiService.joinMeeting(config);
+
+      // 3. Start counting frames for status display
+      _glassesEventSubscription = _glassesService.previewFrameStream.listen((_) {
+        _frameCount++;
+        if (_frameCount % 30 == 0) {
+          _updateState(_currentState.copyWith(framesSent: _frameCount));
+        }
+      });
+
+      // 4. Enable screen share after a short delay (to let meeting establish)
+      await Future.delayed(const Duration(seconds: 2));
+      await _jitsiService.toggleScreenShare();
+
+      _updateState(_currentState.copyWith(
+        status: StreamStatus.streaming,
+        isInMeeting: true,
+      ));
+    } catch (e) {
+      _updateState(_currentState.copyWith(
+        status: StreamStatus.error,
+        errorMessage: e.toString(),
+      ));
+      rethrow;
+    }
+  }
+
+  /// Stop streaming and leave meeting
+  Future<void> stopStreaming() async {
+    _updateState(_currentState.copyWith(status: StreamStatus.stopping));
+
+    try {
+      // Cancel frame subscription
+      await _glassesEventSubscription?.cancel();
+      _glassesEventSubscription = null;
+
+      // Stop glasses streaming
+      await _glassesService.stopStreaming();
+
+      // Leave Jitsi meeting
+      await _jitsiService.leaveMeeting();
+
+      _updateState(const StreamState(
+        status: StreamStatus.stopped,
+        isInMeeting: false,
+        framesSent: 0,
+      ));
+    } catch (e) {
+      _updateState(_currentState.copyWith(
+        status: StreamStatus.error,
+        errorMessage: e.toString(),
+      ));
+    }
+  }
+
+  /// Toggle audio in meeting
+  Future<void> toggleAudio() async {
+    await _jitsiService.toggleAudio();
+  }
+
+  /// Toggle screen share
+  Future<void> toggleScreenShare() async {
+    await _jitsiService.toggleScreenShare();
+  }
+
+  @override
+  void dispose() {
+    _glassesEventSubscription?.cancel();
+    if (_jitsiListener != null) {
+      _jitsiService.removeListener(_jitsiListener!);
+    }
+    super.dispose();
+  }
+}

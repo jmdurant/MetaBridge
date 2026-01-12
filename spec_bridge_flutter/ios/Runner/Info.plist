@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>SpecBridge</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>spec_bridge_flutter</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(FLUTTER_BUILD_NAME)</string>
+	<key>CFBundleSignature</key>
+	<string>????</string>
+	<key>CFBundleVersion</key>
+	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>UILaunchStoryboardName</key>
+	<string>LaunchScreen</string>
+	<key>UIMainStoryboardFile</key>
+	<string>Main</string>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
+	<key>UIApplicationSupportsIndirectInputEvents</key>
+	<true/>
+
+	<!-- URL Schemes for Deep Linking -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.specbridge.app</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>specbridge</string>
+			</array>
+		</dict>
+	</array>
+
+	<!-- Meta Wearables DAT SDK Configuration -->
+	<key>MWDATAppKey</key>
+	<string>YOUR_META_APP_KEY_HERE</string>
+	<key>MWDATClientToken</key>
+	<string>YOUR_META_CLIENT_TOKEN_HERE</string>
+	<key>MWDATCallbackURLScheme</key>
+	<string>specbridge</string>
+
+	<!-- Permissions -->
+	<key>NSCameraUsageDescription</key>
+	<string>SpecBridge needs camera access to stream video from your Meta glasses to meetings.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>SpecBridge needs microphone access for audio in meetings.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>SpecBridge uses Bluetooth to communicate with your Meta glasses.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>SpecBridge uses Bluetooth to communicate with your Meta glasses.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>SpecBridge uses local network access for video conferencing.</string>
+
+	<!-- Background Modes -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>voip</string>
+		<string>bluetooth-central</string>
+	</array>
+
+	<!-- Universal Links (Associated Domains configured in entitlements) -->
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>fb-metaview</string>
+		<string>metaview</string>
+	</array>
+</dict>
+</plist>

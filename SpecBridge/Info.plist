@@ -31,10 +31,16 @@
 		<string>bluetooth-peripheral</string>
 		<string>external-accessory</string>
 		<string>audio</string>
+		<string>voip</string>
 	</array>
 	<key>UISupportedExternalAccessoryProtocols</key>
 	<array>
 		<string>com.meta.ar.wearable</string>
 	</array>
+	<!-- Jitsi Screen Sharing Configuration -->
+	<key>RTCAppGroupIdentifier</key>
+	<string>group.com.dukes.SpecBridge</string>
+	<key>RTCScreenSharingExtension</key>
+	<string>com.dukes.SpecBridge.BroadcastExtension</string>
 </dict>
 </plist>
