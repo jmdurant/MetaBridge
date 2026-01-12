@@ -53,7 +53,8 @@ class MetaWearablesPlugin(
                 val width = call.argument<Int>("width") ?: 1280
                 val height = call.argument<Int>("height") ?: 720
                 val frameRate = call.argument<Int>("frameRate") ?: 24
-                startStreaming(width, height, frameRate, result)
+                val videoSource = call.argument<String>("videoSource") ?: "glasses"
+                startStreaming(width, height, frameRate, videoSource, result)
             }
             "stopStreaming" -> stopStreaming(result)
             else -> result.notImplemented()
@@ -159,53 +160,33 @@ class MetaWearablesPlugin(
         }
     }
 
-    private fun startStreaming(width: Int, height: Int, frameRate: Int, result: MethodChannel.Result) {
+    private var cameraManager: CameraCaptureManager? = null
+    private var currentVideoSource: String = "glasses"
+
+    private fun startStreaming(width: Int, height: Int, frameRate: Int, videoSource: String, result: MethodChannel.Result) {
+        currentVideoSource = videoSource
+
         scope.launch {
             try {
-                val manager = wearablesManager
-                if (manager == null) {
-                    result.error("NOT_CONFIGURED", "Call configure first", null)
-                    return@launch
-                }
-
                 // Initialize Jitsi frame bridge for socket injection
                 jitsiBridge = JitsiFrameBridge(activity)
                 jitsiBridge!!.connect()
 
-                // Initialize stream session manager
-                streamManager = StreamSessionManager(activity, manager)
+                sendEvent(mapOf(
+                    "type" to "streamStatus",
+                    "status" to "starting"
+                ))
 
-                // Observe frames
-                launch {
-                    streamManager!!.frameFlow.collectLatest { frameData ->
-                        // Send to Jitsi via socket injection
-                        jitsiBridge?.sendFrame(frameData)
-
-                        // Send to Flutter for preview (every 3rd frame)
-                        if (streamManager!!.frameCount % 3 == 0L) {
-                            sendFrame(frameData)
-                        }
+                when (videoSource) {
+                    "glasses" -> startGlassesStreaming(width, height, frameRate, result)
+                    "backCamera" -> startCameraStreaming(width, height, frameRate, false, result)
+                    "frontCamera" -> startCameraStreaming(width, height, frameRate, true, result)
+                    "screenRecord" -> {
+                        // Screen recording requires MediaProjection - not implemented yet
+                        result.error("NOT_IMPLEMENTED", "Screen recording not yet implemented", null)
                     }
+                    else -> result.error("INVALID_SOURCE", "Unknown video source: $videoSource", null)
                 }
-
-                // Observe stream status
-                launch {
-                    streamManager!!.statusFlow.collectLatest { status ->
-                        sendEvent(mapOf(
-                            "type" to "streamStatus",
-                            "status" to status
-                        ))
-                    }
-                }
-
-                val success = streamManager!!.startStreaming(width, height, frameRate)
-                if (success) {
-                    sendEvent(mapOf(
-                        "type" to "streamStatus",
-                        "status" to "streaming"
-                    ))
-                }
-                result.success(success)
             } catch (e: Exception) {
                 sendEvent(mapOf(
                     "type" to "streamStatus",
@@ -217,10 +198,87 @@ class MetaWearablesPlugin(
         }
     }
 
+    private suspend fun startGlassesStreaming(width: Int, height: Int, frameRate: Int, result: MethodChannel.Result) {
+        val manager = wearablesManager
+        if (manager == null) {
+            result.error("NOT_CONFIGURED", "Call configure first for glasses streaming", null)
+            return
+        }
+
+        // Initialize stream session manager for glasses
+        streamManager = StreamSessionManager(activity, manager)
+
+        // Observe frames
+        scope.launch {
+            streamManager!!.frameFlow.collectLatest { frameData ->
+                // Send to Jitsi via socket injection
+                jitsiBridge?.sendFrame(frameData)
+
+                // Send to Flutter for preview (every 3rd frame)
+                if (streamManager!!.frameCount % 3 == 0L) {
+                    sendFrame(frameData)
+                }
+            }
+        }
+
+        // Observe stream status
+        scope.launch {
+            streamManager!!.statusFlow.collectLatest { status ->
+                sendEvent(mapOf(
+                    "type" to "streamStatus",
+                    "status" to status
+                ))
+            }
+        }
+
+        val success = streamManager!!.startStreaming(width, height, frameRate)
+        if (success) {
+            sendEvent(mapOf(
+                "type" to "streamStatus",
+                "status" to "streaming"
+            ))
+        }
+        result.success(success)
+    }
+
+    private suspend fun startCameraStreaming(width: Int, height: Int, frameRate: Int, useFrontCamera: Boolean, result: MethodChannel.Result) {
+        // Initialize camera capture manager
+        val camera = CameraCaptureManager(activity)
+        cameraManager = camera
+
+        // Start capture first before collecting frames
+        val success = camera.startCapture(width, height, frameRate, useFrontCamera)
+
+        if (success) {
+            // Observe frames from camera
+            scope.launch {
+                camera.frameFlow.collectLatest { frameData ->
+                    // Send to Jitsi via socket injection
+                    jitsiBridge?.sendFrame(frameData)
+
+                    // Send to Flutter for preview (every 3rd frame)
+                    if (camera.frameCount % 3 == 0L) {
+                        sendFrame(frameData)
+                    }
+                }
+            }
+            sendEvent(mapOf(
+                "type" to "streamStatus",
+                "status" to "streaming"
+            ))
+        }
+        result.success(success)
+    }
+
     private fun stopStreaming(result: MethodChannel.Result) {
         scope.launch {
+            // Stop glasses streaming
             streamManager?.stopStreaming()
             streamManager = null
+
+            // Stop camera streaming
+            cameraManager?.stopCapture()
+            cameraManager = null
 
             jitsiBridge?.disconnect()
             jitsiBridge = null
@@ -259,6 +317,7 @@ class MetaWearablesPlugin(
     fun dispose() {
         scope.cancel()
         streamManager?.stopStreaming()
+        cameraManager?.stopCapture()
         jitsiBridge?.disconnect()
         methodChannel.setMethodCallHandler(null)
     }

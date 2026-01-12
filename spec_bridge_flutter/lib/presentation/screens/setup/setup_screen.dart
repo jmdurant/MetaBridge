@@ -156,16 +156,35 @@ class _SetupScreenState extends State<SetupScreen> {
             ),
             const SizedBox(height: 24),
 
-            // Glasses Connection Section
+            // Video Source Section
             _buildSection(
-              title: 'Glasses Connection',
+              title: 'Video Source',
               child: Consumer<GlassesService>(
                 builder: (context, glassesService, _) {
-                  return _buildGlassesCard(glassesService.currentState);
+                  return _buildVideoSourceCard(glassesService);
                 },
               ),
             ),
             const SizedBox(height: 24),
+
+            // Glasses Connection Section (only shown when glasses is selected)
+            Consumer<GlassesService>(
+              builder: (context, glassesService, _) {
+                if (glassesService.videoSource != VideoSource.glasses) {
+                  return const SizedBox.shrink();
+                }
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _buildSection(
+                      title: 'Glasses Connection',
+                      child: _buildGlassesCard(glassesService.currentState),
+                    ),
+                    const SizedBox(height: 24),
+                  ],
+                );
+              },
+            ),
 
             // Meeting Configuration Section
             _buildSection(
@@ -346,15 +365,105 @@ class _SetupScreenState extends State<SetupScreen> {
     );
   }
 
+  Widget _buildVideoSourceCard(GlassesService glassesService) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Select where to capture video from:',
+              style: TextStyle(fontSize: 14),
+            ),
+            const SizedBox(height: 12),
+            _buildVideoSourceOption(
+              glassesService,
+              VideoSource.glasses,
+              Icons.visibility,
+              'Meta Glasses',
+              'Stream from Ray-Ban Meta glasses',
+            ),
+            _buildVideoSourceOption(
+              glassesService,
+              VideoSource.backCamera,
+              Icons.camera_rear,
+              'Back Camera',
+              'Use phone\'s rear camera',
+            ),
+            _buildVideoSourceOption(
+              glassesService,
+              VideoSource.frontCamera,
+              Icons.camera_front,
+              'Front Camera',
+              'Use phone\'s front camera',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildVideoSourceOption(
+    GlassesService glassesService,
+    VideoSource source,
+    IconData icon,
+    String title,
+    String subtitle, {
+    bool enabled = true,
+  }) {
+    final isSelected = glassesService.videoSource == source;
+
+    return Opacity(
+      opacity: enabled ? 1.0 : 0.5,
+      child: RadioListTile<VideoSource>(
+        value: source,
+        groupValue: glassesService.videoSource,
+        onChanged: enabled
+            ? (value) {
+                if (value != null) {
+                  glassesService.setVideoSource(value);
+                }
+              }
+            : null,
+        title: Row(
+          children: [
+            Icon(icon, size: 20, color: isSelected ? Theme.of(context).primaryColor : null),
+            const SizedBox(width: 8),
+            Text(title),
+          ],
+        ),
+        subtitle: Text(subtitle, style: const TextStyle(fontSize: 12)),
+        contentPadding: EdgeInsets.zero,
+        dense: true,
+      ),
+    );
+  }
+
   Widget _buildStartButton(GlassesState state) {
-    final isReady =
-        state.connection == GlassesConnectionState.connected &&
-        _permissionsGranted;
+    // Use the isReady getter which handles different video sources
+    final isReady = state.isReady && _permissionsGranted;
+
+    String buttonLabel;
+    switch (state.videoSource) {
+      case VideoSource.glasses:
+        buttonLabel = 'Start Streaming (Glasses)';
+        break;
+      case VideoSource.backCamera:
+        buttonLabel = 'Start Streaming (Back Camera)';
+        break;
+      case VideoSource.frontCamera:
+        buttonLabel = 'Start Streaming (Front Camera)';
+        break;
+      case VideoSource.screenRecord:
+        buttonLabel = 'Start Streaming (Screen)';
+        break;
+    }
 
     return FilledButton.icon(
       onPressed: isReady ? _startStreaming : null,
       icon: const Icon(Icons.play_arrow),
-      label: const Text('Start Streaming'),
+      label: Text(buttonLabel),
       style: FilledButton.styleFrom(
         padding: const EdgeInsets.symmetric(vertical: 16),
       ),

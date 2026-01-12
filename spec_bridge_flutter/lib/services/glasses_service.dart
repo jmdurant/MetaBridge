@@ -5,7 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../data/models/glasses_state.dart';
 import 'platform_channels/meta_dat_channel.dart';
 
-/// Service for managing Meta glasses connection and video capture
+/// Service for managing video capture from glasses or phone cameras
 class GlassesService extends ChangeNotifier {
   final MetaDATChannel _channel;
 
@@ -16,10 +16,13 @@ class GlassesService extends ChangeNotifier {
     _listenToEvents();
   }
 
-  /// Current glasses state
+  /// Current glasses/video state
   GlassesState get currentState => _currentState;
 
-  /// Stream of preview frames from glasses
+  /// Currently selected video source
+  VideoSource get videoSource => _currentState.videoSource;
+
+  /// Stream of preview frames from current video source
   Stream<Uint8List> get previewFrameStream => _channel.previewFrameStream;
 
   void _listenToEvents() {
@@ -88,7 +91,12 @@ class GlassesService extends ChangeNotifier {
     return status;
   }
 
-  /// Start video streaming from glasses
+  /// Set the video source for streaming
+  void setVideoSource(VideoSource source) {
+    _updateState(_currentState.copyWith(videoSource: source));
+  }
+
+  /// Start video streaming from current video source
   Future<bool> startStreaming({
     int width = 1280,
     int height = 720,
@@ -98,6 +106,7 @@ class GlassesService extends ChangeNotifier {
       width: width,
       height: height,
       frameRate: frameRate,
+      videoSource: _currentState.videoSource,
     );
     return await _channel.startStreaming(config);
   }

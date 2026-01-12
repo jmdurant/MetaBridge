@@ -1,101 +1,190 @@
-import AVFoundation
+//
+//  SampleUploader.swift
+//  SpecBridge
+//
+//  Converts CMSampleBuffer frames to JPEG and sends via socket to Jitsi
+//
+
 import Foundation
+import CoreMedia
+import CoreImage
+import UIKit
+import ReplayKit
 
-/// Uploads video frames to Jitsi via socket connection
-/// Formats frames as HTTP-style messages that Jitsi's screen share expects
 class SampleUploader {
-    private let connection: SocketConnection
-    private let queue = DispatchQueue(label: "com.specbridge.uploader", qos: .userInteractive)
+    private static let imageContext = CIContext()
 
-    private var frameIndex: UInt64 = 0
-    private let boundary = "frame-boundary"
+    @Atomic private var isReady = false
+    private var connection: SocketConnection
+
+    private var dataToSend: Data?
+    private var byteIndex = 0
+
+    private let serialQueue: DispatchQueue
 
     init(connection: SocketConnection) {
         self.connection = connection
+        self.serialQueue = DispatchQueue(label: "com.specbridge.sampleuploader")
+
+        setupConnection()
     }
 
-    // MARK: - Frame Upload
+    @discardableResult
+    func send(sample: CMSampleBuffer) -> Bool {
+        guard isReady else {
+            return false
+        }
 
-    /// Upload JPEG frame data to Jitsi
-    func uploadFrame(_ jpegData: Data) {
-        queue.async { [weak self] in
-            self?.uploadFrameInternal(jpegData)
+        isReady = false
+
+        dataToSend = prepare(sample: sample)
+        byteIndex = 0
+
+        serialQueue.async { [weak self] in
+            self?.sendDataChunk()
+        }
+
+        return true
+    }
+
+    // Overload for sending raw pixel buffer with orientation
+    @discardableResult
+    func send(pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation = .up) -> Bool {
+        guard isReady else {
+            return false
+        }
+
+        isReady = false
+
+        dataToSend = prepare(pixelBuffer: pixelBuffer, orientation: orientation)
+        byteIndex = 0
+
+        serialQueue.async { [weak self] in
+            self?.sendDataChunk()
+        }
+
+        return true
+    }
+}
+
+// MARK: - Private Methods
+private extension SampleUploader {
+    func setupConnection() {
+        connection.didOpen = { [weak self] in
+            self?.isReady = true
+            print("[SampleUploader] Connection opened, ready to send frames")
+        }
+
+        connection.didClose = { [weak self] error in
+            self?.isReady = false
+            print("[SampleUploader] Connection closed: \(String(describing: error))")
+        }
+
+        connection.streamHasSpaceAvailable = { [weak self] in
+            self?.serialQueue.async {
+                self?.sendDataChunk()
+            }
         }
     }
 
-    private func uploadFrameInternal(_ jpegData: Data) {
-        frameIndex += 1
-
-        // Format as HTTP multipart message (Jitsi screen share protocol)
-        let message = buildFrameMessage(jpegData)
-
-        connection.write(message)
-    }
-
-    /// Upload CMSampleBuffer directly
-    func uploadSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
-        guard let jpegData = convertToJPEG(sampleBuffer) else { return }
-        uploadFrame(jpegData)
-    }
-
-    // MARK: - Message Building
-
-    private func buildFrameMessage(_ jpegData: Data) -> Data {
-        // Build HTTP-style multipart message
-        // This format is what Jitsi's Broadcast Upload Extension expects
-
-        var message = Data()
-
-        // Content headers
-        let headers = """
-        --\(boundary)\r
-        Content-Type: image/jpeg\r
-        Content-Length: \(jpegData.count)\r
-        X-Frame-Index: \(frameIndex)\r
-        X-Timestamp: \(Date().timeIntervalSince1970)\r
-        \r
-
-        """
-
-        if let headerData = headers.data(using: .utf8) {
-            message.append(headerData)
+    func sendDataChunk() {
+        guard let dataToSend = dataToSend else {
+            return
         }
 
-        // JPEG data
-        message.append(jpegData)
+        var bytesLeft = dataToSend.count - byteIndex
+        var length = bytesLeft > 10240 ? 10240 : bytesLeft
 
-        // Boundary terminator
-        if let terminator = "\r\n".data(using: .utf8) {
-            message.append(terminator)
+        length = dataToSend[byteIndex..<(byteIndex + length)].withUnsafeBytes {
+            guard let ptr = $0.bindMemory(to: UInt8.self).baseAddress else {
+                return 0
+            }
+            return connection.writeToStream(buffer: ptr, maxLength: length)
         }
 
-        return message
+        if length > 0 {
+            byteIndex += length
+            bytesLeft -= length
+
+            if bytesLeft == 0 {
+                self.dataToSend = nil
+                byteIndex = 0
+                isReady = true
+            }
+        }
     }
 
-    // MARK: - JPEG Conversion
-
-    private func convertToJPEG(_ sampleBuffer: CMSampleBuffer, quality: CGFloat = 0.7) -> Data? {
-        guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+    func prepare(sample: CMSampleBuffer) -> Data? {
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sample) else {
+            print("[SampleUploader] Failed to get pixel buffer from sample")
             return nil
         }
 
-        CVPixelBufferLockBaseAddress(imageBuffer, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(imageBuffer, .readOnly) }
+        // Get orientation from sample buffer
+        var orientation = CGImagePropertyOrientation.up
+        if let orientationAttachment = CMGetAttachment(
+            sample,
+            key: RPVideoSampleOrientationKey as CFString,
+            attachmentModeOut: nil
+        ) as? NSNumber {
+            orientation = CGImagePropertyOrientation(rawValue: orientationAttachment.uint32Value) ?? .up
+        }
 
-        let ciImage = CIImage(cvPixelBuffer: imageBuffer)
-        let context = CIContext()
+        return prepare(pixelBuffer: pixelBuffer, orientation: orientation)
+    }
 
-        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
+    func prepare(pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation) -> Data? {
+        // Scale down for bandwidth (0.5 = half resolution)
+        guard let jpegData = jpegData(from: pixelBuffer, scale: 0.5) else {
+            print("[SampleUploader] Failed to create JPEG data")
+            return nil
+        }
+
+        // Wrap in HTTP message format (what react-native-webrtc expects)
+        guard let message = CFHTTPMessageCreateResponse(
+            kCFAllocatorDefault,
+            200,
+            nil,
+            kCFHTTPVersion1_1
+        ).takeRetainedValue() as CFHTTPMessage? else {
+            print("[SampleUploader] Failed to create HTTP message")
+            return nil
+        }
+
+        CFHTTPMessageSetHeaderFieldValue(
+            message,
+            "Content-Length" as CFString,
+            "\(jpegData.count)" as CFString
+        )
+
+        CFHTTPMessageSetHeaderFieldValue(
+            message,
+            "Buffer-Orientation" as CFString,
+            "\(orientation.rawValue)" as CFString
+        )
+
+        CFHTTPMessageSetBody(message, jpegData as CFData)
+
+        guard let serializedMessage = CFHTTPMessageCopySerializedMessage(message)?.takeRetainedValue() as Data? else {
+            print("[SampleUploader] Failed to serialize HTTP message")
+            return nil
+        }
+
+        return serializedMessage
+    }
+
+    func jpegData(from pixelBuffer: CVPixelBuffer, scale: CGFloat) -> Data? {
+        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+
+        let scaledImage = ciImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+
+        guard let cgImage = Self.imageContext.createCGImage(scaledImage, from: scaledImage.extent) else {
             return nil
         }
 
         let uiImage = UIImage(cgImage: cgImage)
-        return uiImage.jpegData(compressionQuality: quality)
-    }
 
-    // MARK: - Reset
-
-    func reset() {
-        frameIndex = 0
+        // Use high quality JPEG compression
+        return uiImage.jpegData(compressionQuality: 0.8)
     }
 }

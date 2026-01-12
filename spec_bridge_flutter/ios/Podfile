@@ -33,13 +33,9 @@ target 'Runner' do
 
   flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
 
-  # Meta Wearables DAT SDK
-  pod 'MWDATCore', :git => 'https://github.com/anthropics/meta-wearables-dat-ios.git', :tag => 'v0.1.0'
-  pod 'MWDATCamera', :git => 'https://github.com/anthropics/meta-wearables-dat-ios.git', :tag => 'v0.1.0'
-
-  # Note: If the above doesn't work, try the Facebook official repo:
-  # pod 'MWDATCore', :git => 'https://github.com/facebook/meta-wearables-dat-ios.git'
-  # pod 'MWDATCamera', :git => 'https://github.com/facebook/meta-wearables-dat-ios.git'
+  # Meta Wearables DAT SDK (official Facebook repo)
+  pod 'MWDATCore', :git => 'https://github.com/facebook/meta-wearables-dat-ios.git'
+  pod 'MWDATCamera', :git => 'https://github.com/facebook/meta-wearables-dat-ios.git'
 
   target 'RunnerTests' do
     inherit! :search_paths

@@ -10,10 +10,13 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.OutputStream
+import java.nio.charset.StandardCharsets
 
 /**
  * Bridge for injecting video frames into Jitsi screen share on Android
  * Uses Unix domain socket to communicate with Jitsi SDK's broadcast upload mechanism
+ *
+ * Frame format matches iOS SampleUploader: HTTP/1.1 response with JPEG body
  */
 class JitsiFrameBridge(private val context: Context) {
 
@@ -25,11 +28,14 @@ class JitsiFrameBridge(private val context: Context) {
     @Volatile
     private var isConnected = false
 
+    @Volatile
+    private var isReady = true
+
     private var reconnectAttempts = 0
     private val maxReconnectAttempts = 5
 
-    private var frameIndex: Long = 0
-    private val boundary = "frame-boundary"
+    // Default orientation (up)
+    private val defaultOrientation = 1
 
     // Socket path for Jitsi screen share
     private val socketPath: String by lazy {
@@ -59,6 +65,7 @@ class JitsiFrameBridge(private val context: Context) {
 
             outputStream = socket?.outputStream
             isConnected = true
+            isReady = true
             reconnectAttempts = 0
 
             android.util.Log.d("JitsiFrameBridge", "Socket connected")
@@ -92,18 +99,21 @@ class JitsiFrameBridge(private val context: Context) {
         outputStream = null
         socket = null
         isConnected = false
+        isReady = true
     }
 
     // MARK: - Frame Injection
 
     fun sendFrame(jpegData: ByteArray) {
-        if (!isConnected) {
-            // Try to reconnect
-            if (reconnectAttempts < maxReconnectAttempts) {
+        if (!isConnected || !isReady) {
+            // Try to reconnect if not connected
+            if (!isConnected && reconnectAttempts < maxReconnectAttempts) {
                 connect()
             }
             return
         }
+
+        isReady = false
 
         scope.launch {
             sendFrameInternal(jpegData)
@@ -112,18 +122,19 @@ class JitsiFrameBridge(private val context: Context) {
 
     private fun sendFrameInternal(jpegData: ByteArray) {
         try {
-            frameIndex++
-
-            // Build HTTP-style multipart message
-            val message = buildFrameMessage(jpegData)
+            // Build HTTP response message (matching iOS CFHTTPMessageCreateResponse format)
+            val message = buildHttpResponse(jpegData)
 
             outputStream?.let { stream ->
                 stream.write(message)
                 stream.flush()
             }
+
+            isReady = true
         } catch (e: Exception) {
             android.util.Log.e("JitsiFrameBridge", "Frame send failed: ${e.message}")
             isConnected = false
+            isReady = true
 
             // Attempt reconnection
             if (reconnectAttempts < maxReconnectAttempts) {
@@ -136,29 +147,30 @@ class JitsiFrameBridge(private val context: Context) {
         }
     }
 
-    private fun buildFrameMessage(jpegData: ByteArray): ByteArray {
-        // Build HTTP-style multipart message
-        // This format is what Jitsi's Broadcast Upload Extension expects
+    /**
+     * Build HTTP/1.1 response message matching iOS CFHTTPMessageCreateResponse format
+     *
+     * Format:
+     * HTTP/1.1 200 OK\r\n
+     * Content-Length: <size>\r\n
+     * Buffer-Orientation: <orientation>\r\n
+     * \r\n
+     * <jpeg-data>
+     */
+    private fun buildHttpResponse(jpegData: ByteArray): ByteArray {
+        val headers = StringBuilder()
+            .append("HTTP/1.1 200 OK\r\n")
+            .append("Content-Length: ${jpegData.size}\r\n")
+            .append("Buffer-Orientation: $defaultOrientation\r\n")
+            .append("\r\n")
+            .toString()
 
-        val headers = """
-            --$boundary
-            Content-Type: image/jpeg
-            Content-Length: ${jpegData.size}
-            X-Frame-Index: $frameIndex
-            X-Timestamp: ${System.currentTimeMillis() / 1000.0}
+        val headerBytes = headers.toByteArray(StandardCharsets.UTF_8)
 
-        """.trimIndent().replace("\n", "\r\n")
-
-        val terminator = "\r\n"
-
-        val headerBytes = headers.toByteArray(Charsets.UTF_8)
-        val terminatorBytes = terminator.toByteArray(Charsets.UTF_8)
-
-        // Combine all parts
-        val message = ByteArray(headerBytes.size + jpegData.size + terminatorBytes.size)
+        // Combine headers and body
+        val message = ByteArray(headerBytes.size + jpegData.size)
         System.arraycopy(headerBytes, 0, message, 0, headerBytes.size)
         System.arraycopy(jpegData, 0, message, headerBytes.size, jpegData.size)
-        System.arraycopy(terminatorBytes, 0, message, headerBytes.size + jpegData.size, terminatorBytes.size)
 
         return message
     }

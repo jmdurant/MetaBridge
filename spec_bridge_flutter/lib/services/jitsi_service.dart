@@ -84,6 +84,11 @@ class JitsiService extends ChangeNotifier {
         'startWithAudioMuted': config.startWithAudioMuted,
         'startWithVideoMuted': config.startWithVideoMuted,
         'prejoinPageEnabled': false,
+        // Join anonymously without prompting for login
+        'requireDisplayName': false,
+        'disableModeratorIndicator': true,
+        'enableLobby': false,
+        'enableInsecureRoomNameWarning': false,
       },
       featureFlags: {
         'ios.screensharing.enabled': true,
@@ -92,6 +97,10 @@ class JitsiService extends ChangeNotifier {
         'meeting-password.enabled': false,
         'invite.enabled': false,
         'close-captions.enabled': false,
+        // Disable lobby and login for anonymous join
+        'lobby-mode.enabled': false,
+        'security-options.enabled': false,
+        'prejoinpage.enabled': false,
       },
     );
 

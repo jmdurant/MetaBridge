@@ -9,17 +9,20 @@ class StreamConfig {
   final int width;
   final int height;
   final int frameRate;
+  final VideoSource videoSource;
 
   const StreamConfig({
     this.width = 1280,
     this.height = 720,
     this.frameRate = 24,
+    this.videoSource = VideoSource.glasses,
   });
 
   Map<String, dynamic> toMap() => {
         'width': width,
         'height': height,
         'frameRate': frameRate,
+        'videoSource': videoSource.name,
       };
 }
 

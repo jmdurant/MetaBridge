@@ -2,8 +2,11 @@ import Flutter
 import Foundation
 import MWDATCore
 import MWDATCamera
+import AVFoundation
 
 /// Flutter plugin for Meta Wearables DAT SDK integration
+/// Uses REAL SDK APIs from MWDATCore/MWDATCamera
+@MainActor
 class MetaDATPlugin: NSObject {
     private let methodChannel: FlutterMethodChannel
     private let eventChannel: FlutterEventChannel
@@ -12,10 +15,13 @@ class MetaDATPlugin: NSObject {
     private var eventSink: FlutterEventSink?
     private var frameSink: FlutterEventSink?
 
-    private var wearablesManager: MetaWearablesManager?
-    private var streamManager: StreamSessionManager?
-    private var jitsiBridge: JitsiFrameBridge?
+    // Real SDK objects
+    private var streamSession: StreamSession?
+    private var videoFrameToken: AnyListenerToken?
+    private var stateToken: AnyListenerToken?
+    private var jitsiFrameInjector: JitsiFrameInjector?
 
+    private var frameCount: Int = 0
     private var pendingURL: URL?
 
     init(messenger: FlutterBinaryMessenger) {
@@ -34,7 +40,11 @@ class MetaDATPlugin: NSObject {
 
         super.init()
 
-        methodChannel.setMethodCallHandler(handleMethodCall)
+        methodChannel.setMethodCallHandler { [weak self] call, result in
+            Task { @MainActor in
+                self?.handleMethodCall(call, result: result)
+            }
+        }
         eventChannel.setStreamHandler(self)
         frameChannel.setStreamHandler(FrameStreamHandler(plugin: self))
     }
@@ -42,7 +52,8 @@ class MetaDATPlugin: NSObject {
     private func handleMethodCall(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
         switch call.method {
         case "configure":
-            configure(result: result)
+            // SDK auto-initializes, no configuration needed
+            result(true)
 
         case "startRegistration":
             startRegistration(result: result)
@@ -57,165 +68,246 @@ class MetaDATPlugin: NSObject {
             }
 
         case "checkCameraPermission":
-            checkCameraPermission(result: result)
+            Task {
+                await checkCameraPermission(result: result)
+            }
 
         case "requestCameraPermission":
-            requestCameraPermission(result: result)
+            Task {
+                await requestCameraPermission(result: result)
+            }
 
         case "startStreaming":
-            if let args = call.arguments as? [String: Any] {
-                let width = args["width"] as? Int ?? 1280
-                let height = args["height"] as? Int ?? 720
-                let frameRate = args["frameRate"] as? Int ?? 24
-                startStreaming(width: width, height: height, frameRate: frameRate, result: result)
-            } else {
-                startStreaming(width: 1280, height: 720, frameRate: 24, result: result)
+            let videoSource = (call.arguments as? [String: Any])?["videoSource"] as? String ?? "glasses"
+            Task {
+                await startStreaming(videoSource: videoSource, result: result)
             }
 
         case "stopStreaming":
-            stopStreaming(result: result)
+            Task {
+                await stopStreaming(result: result)
+            }
 
         default:
             result(FlutterMethodNotImplemented)
         }
     }
 
-    // MARK: - Method Implementations
-
-    private func configure(result: @escaping FlutterResult) {
-        wearablesManager = MetaWearablesManager()
-        wearablesManager?.delegate = self
-
-        wearablesManager?.configure { [weak self] success, error in
-            DispatchQueue.main.async {
-                if success {
-                    result(true)
-                } else {
-                    result(FlutterError(
-                        code: "CONFIG_FAILED",
-                        message: error?.localizedDescription ?? "Failed to configure SDK",
-                        details: nil
-                    ))
-                }
-            }
-        }
-    }
+    // MARK: - Registration
 
     private func startRegistration(result: @escaping FlutterResult) {
-        guard let manager = wearablesManager else {
-            result(FlutterError(code: "NOT_CONFIGURED", message: "Call configure first", details: nil))
-            return
-        }
+        sendEvent(["type": "connectionState", "state": "connecting"])
 
-        manager.startRegistration { success, error in
-            DispatchQueue.main.async {
-                if success {
-                    result(true)
-                } else {
-                    result(FlutterError(
-                        code: "REGISTRATION_FAILED",
-                        message: error?.localizedDescription ?? "Failed to start registration",
-                        details: nil
-                    ))
-                }
-            }
+        do {
+            try Wearables.shared.startRegistration()
+            result(true)
+        } catch {
+            sendEvent([
+                "type": "connectionState",
+                "state": "error",
+                "error": error.localizedDescription
+            ])
+            result(FlutterError(
+                code: "REGISTRATION_FAILED",
+                message: error.localizedDescription,
+                details: nil
+            ))
         }
     }
 
     private func handleURL(_ url: URL, result: @escaping FlutterResult) {
-        guard let manager = wearablesManager else {
-            result(FlutterError(code: "NOT_CONFIGURED", message: "Call configure first", details: nil))
-            return
-        }
-
-        manager.handleCallback(url: url) { success, error in
-            DispatchQueue.main.async {
-                if success {
-                    self.sendEvent(["type": "connectionState", "state": "connected"])
-                    result(true)
-                } else {
-                    self.sendEvent([
-                        "type": "connectionState",
-                        "state": "error",
-                        "error": error?.localizedDescription ?? "Unknown error"
-                    ])
-                    result(false)
-                }
-            }
-        }
+        // The URL is handled automatically by the SDK when the app returns from Meta View
+        // We just need to notify Flutter about the connection state
+        sendEvent(["type": "connectionState", "state": "connected"])
+        result(true)
     }
 
-    private func checkCameraPermission(result: @escaping FlutterResult) {
-        guard let manager = wearablesManager else {
+    // MARK: - Permissions (Real async APIs)
+
+    private func checkCameraPermission(result: @escaping FlutterResult) async {
+        do {
+            let status = try await Wearables.shared.checkPermissionStatus(.camera)
+            let statusString = permissionStatusToString(status)
+            result(statusString)
+        } catch {
             result("unknown")
-            return
-        }
-
-        manager.checkCameraPermission { status in
-            DispatchQueue.main.async {
-                result(status.rawValue)
-            }
         }
     }
 
-    private func requestCameraPermission(result: @escaping FlutterResult) {
-        guard let manager = wearablesManager else {
-            result(FlutterError(code: "NOT_CONFIGURED", message: "Call configure first", details: nil))
-            return
-        }
-
-        manager.requestCameraPermission { status in
-            DispatchQueue.main.async {
-                result(status.rawValue)
-            }
-        }
-    }
-
-    private func startStreaming(width: Int, height: Int, frameRate: Int, result: @escaping FlutterResult) {
-        guard let manager = wearablesManager else {
-            result(FlutterError(code: "NOT_CONFIGURED", message: "Call configure first", details: nil))
-            return
-        }
-
-        // Initialize Jitsi frame bridge for socket injection
-        jitsiBridge = JitsiFrameBridge()
-        jitsiBridge?.connect()
-
-        // Initialize stream session manager
-        streamManager = StreamSessionManager(wearablesManager: manager)
-        streamManager?.delegate = self
-
-        let config = StreamConfig(width: width, height: height, frameRate: frameRate)
-        streamManager?.startStreaming(config: config) { [weak self] success, error in
-            DispatchQueue.main.async {
-                if success {
-                    self?.sendEvent(["type": "streamStatus", "status": "streaming"])
-                    result(true)
-                } else {
-                    self?.sendEvent([
-                        "type": "streamStatus",
-                        "status": "error",
-                        "error": error?.localizedDescription ?? "Unknown error"
-                    ])
-                    result(FlutterError(
-                        code: "STREAM_FAILED",
-                        message: error?.localizedDescription ?? "Failed to start streaming",
-                        details: nil
-                    ))
-                }
-            }
+    private func requestCameraPermission(result: @escaping FlutterResult) async {
+        do {
+            let status = try await Wearables.shared.requestPermission(.camera)
+            let statusString = permissionStatusToString(status)
+            result(statusString)
+        } catch {
+            result(FlutterError(
+                code: "PERMISSION_FAILED",
+                message: error.localizedDescription,
+                details: nil
+            ))
         }
     }
 
-    private func stopStreaming(result: @escaping FlutterResult) {
-        streamManager?.stopStreaming()
-        streamManager = nil
+    private func permissionStatusToString(_ status: PermissionStatus) -> String {
+        switch status {
+        case .granted: return "granted"
+        case .denied: return "denied"
+        case .notDetermined: return "notDetermined"
+        @unknown default: return "unknown"
+        }
+    }
 
-        jitsiBridge?.disconnect()
-        jitsiBridge = nil
+    // Camera capture manager for phone cameras
+    private var cameraCaptureManager: CameraCaptureManager?
+    private var currentVideoSource: String = "glasses"
+
+    // MARK: - Streaming
+
+    private func startStreaming(videoSource: String, result: @escaping FlutterResult) async {
+        currentVideoSource = videoSource
+        sendEvent(["type": "streamStatus", "status": "starting"])
+        frameCount = 0
+
+        // Configure audio session for Bluetooth
+        configureAudio()
+
+        // Initialize Jitsi frame injector for socket injection
+        jitsiFrameInjector = JitsiFrameInjector()
+        jitsiFrameInjector?.start()
+
+        switch videoSource {
+        case "glasses":
+            await startGlassesStreaming(result: result)
+        case "backCamera":
+            startCameraStreaming(useFrontCamera: false, result: result)
+        case "frontCamera":
+            startCameraStreaming(useFrontCamera: true, result: result)
+        case "screenRecord":
+            result(FlutterError(code: "NOT_IMPLEMENTED", message: "Screen recording not yet implemented", details: nil))
+        default:
+            result(FlutterError(code: "INVALID_SOURCE", message: "Unknown video source: \(videoSource)", details: nil))
+        }
+    }
+
+    private func startGlassesStreaming(result: @escaping FlutterResult) async {
+        // Create device selector (auto-selects available device)
+        let selector = AutoDeviceSelector(wearables: Wearables.shared)
+
+        // Configure stream: 720p @ 24fps raw video
+        let config = StreamSessionConfig(
+            videoCodec: .raw,
+            resolution: .high,
+            frameRate: 24
+        )
+
+        // Create stream session
+        let session = StreamSession(streamSessionConfig: config, deviceSelector: selector)
+        self.streamSession = session
+
+        // Subscribe to session state changes
+        stateToken = session.statePublisher.listen { [weak self] state in
+            Task { @MainActor in
+                self?.handleSessionState(state)
+            }
+        }
+
+        // Subscribe to video frames
+        videoFrameToken = session.videoFramePublisher.listen { [weak self] frame in
+            Task { @MainActor in
+                self?.handleVideoFrame(frame)
+            }
+        }
+
+        // Start the stream
+        await session.start()
+        result(true)
+    }
+
+    private func startCameraStreaming(useFrontCamera: Bool, result: @escaping FlutterResult) {
+        cameraCaptureManager = CameraCaptureManager()
+        cameraCaptureManager?.onFrameCaptured = { [weak self] sampleBuffer, jpegData in
+            guard let self = self else { return }
+            self.frameCount += 1
+
+            // Send to Jitsi via socket injection
+            self.jitsiFrameInjector?.injectFrame(sampleBuffer)
+
+            // Send preview to Flutter (every 3rd frame)
+            if self.frameCount % 3 == 0 {
+                self.sendFrame(jpegData)
+            }
+        }
+
+        let success = cameraCaptureManager?.startCapture(useFrontCamera: useFrontCamera) ?? false
+        if success {
+            sendEvent(["type": "streamStatus", "status": "streaming"])
+        }
+        result(success)
+    }
+
+    private func stopStreaming(result: @escaping FlutterResult) async {
+        sendEvent(["type": "streamStatus", "status": "stopping"])
+
+        // Stop glasses stream session
+        await streamSession?.stop()
+        videoFrameToken = nil
+        stateToken = nil
+        streamSession = nil
+
+        // Stop camera capture
+        cameraCaptureManager?.stopCapture()
+        cameraCaptureManager = nil
+
+        // Stop Jitsi injector
+        jitsiFrameInjector?.stop()
+        jitsiFrameInjector = nil
 
         sendEvent(["type": "streamStatus", "status": "stopped"])
         result(nil)
+    }
+
+    private func handleSessionState(_ state: StreamSessionState) {
+        let statusString: String
+        switch state {
+        case .stopped: statusString = "stopped"
+        case .waitingForDevice: statusString = "waiting"
+        case .starting: statusString = "starting"
+        case .streaming: statusString = "streaming"
+        case .paused: statusString = "paused"
+        case .stopping: statusString = "stopping"
+        @unknown default: statusString = "unknown"
+        }
+        sendEvent(["type": "streamStatus", "status": statusString])
+    }
+
+    private func handleVideoFrame(_ frame: VideoFrame) {
+        frameCount += 1
+
+        // Send to Jitsi via socket injection (uses CMSampleBuffer)
+        jitsiFrameInjector?.injectFrame(frame.sampleBuffer)
+
+        // Send preview to Flutter (every 3rd frame to reduce bandwidth)
+        if frameCount % 3 == 0 {
+            if let image = frame.makeUIImage(),
+               let jpegData = image.jpegData(compressionQuality: 0.7) {
+                sendFrame(jpegData)
+            }
+        }
+    }
+
+    private func configureAudio() {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(
+                .playAndRecord,
+                mode: .default,
+                options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker]
+            )
+            try session.setActive(true)
+            print("[MetaDATPlugin] Audio session configured for Bluetooth")
+        } catch {
+            print("[MetaDATPlugin] Failed to configure audio session: \(error)")
+        }
     }
 
     // MARK: - URL Handling
@@ -231,28 +323,28 @@ class MetaDATPlugin: NSObject {
     // MARK: - Event Helpers
 
     private func sendEvent(_ data: [String: Any]) {
-        DispatchQueue.main.async {
-            self.eventSink?(data)
-        }
+        eventSink?(data)
     }
 
     fileprivate func sendFrame(_ data: Data) {
-        DispatchQueue.main.async {
-            self.frameSink?(FlutterStandardTypedData(bytes: data))
-        }
+        frameSink?(FlutterStandardTypedData(bytes: data))
     }
 }
 
 // MARK: - FlutterStreamHandler
 
 extension MetaDATPlugin: FlutterStreamHandler {
-    func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
-        eventSink = events
+    nonisolated func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+        Task { @MainActor in
+            self.eventSink = events
+        }
         return nil
     }
 
-    func onCancel(withArguments arguments: Any?) -> FlutterError? {
-        eventSink = nil
+    nonisolated func onCancel(withArguments arguments: Any?) -> FlutterError? {
+        Task { @MainActor in
+            self.eventSink = nil
+        }
         return nil
     }
 }
@@ -267,92 +359,16 @@ private class FrameStreamHandler: NSObject, FlutterStreamHandler {
     }
 
     func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
-        plugin?.frameSink = events
+        Task { @MainActor in
+            self.plugin?.frameSink = events
+        }
         return nil
     }
 
     func onCancel(withArguments arguments: Any?) -> FlutterError? {
-        plugin?.frameSink = nil
+        Task { @MainActor in
+            self.plugin?.frameSink = nil
+        }
         return nil
     }
-}
-
-// MARK: - MetaWearablesManagerDelegate
-
-extension MetaDATPlugin: MetaWearablesManagerDelegate {
-    func wearablesManager(_ manager: MetaWearablesManager, didChangeConnectionState state: ConnectionState) {
-        let stateString: String
-        switch state {
-        case .disconnected: stateString = "disconnected"
-        case .connecting: stateString = "connecting"
-        case .connected: stateString = "connected"
-        case .error: stateString = "error"
-        }
-        sendEvent(["type": "connectionState", "state": stateString])
-    }
-
-    func wearablesManager(_ manager: MetaWearablesManager, didReceiveError error: Error) {
-        sendEvent([
-            "type": "connectionState",
-            "state": "error",
-            "error": error.localizedDescription
-        ])
-    }
-}
-
-// MARK: - StreamSessionManagerDelegate
-
-extension MetaDATPlugin: StreamSessionManagerDelegate {
-    func streamManager(_ manager: StreamSessionManager, didReceiveFrame frameData: Data) {
-        // Send to Jitsi via socket injection (every frame)
-        jitsiBridge?.sendFrame(frameData)
-
-        // Send to Flutter for preview (every 3rd frame to reduce bandwidth)
-        if manager.frameCount % 3 == 0 {
-            sendFrame(frameData)
-        }
-    }
-
-    func streamManager(_ manager: StreamSessionManager, didChangeStatus status: StreamSessionStatus) {
-        let statusString: String
-        switch status {
-        case .idle: statusString = "stopped"
-        case .starting: statusString = "starting"
-        case .streaming: statusString = "streaming"
-        case .stopping: statusString = "stopping"
-        case .error: statusString = "error"
-        }
-        sendEvent(["type": "streamStatus", "status": statusString])
-    }
-
-    func streamManager(_ manager: StreamSessionManager, didReceiveError error: Error) {
-        sendEvent([
-            "type": "streamStatus",
-            "status": "error",
-            "error": error.localizedDescription
-        ])
-    }
-}
-
-// MARK: - Supporting Types
-
-enum ConnectionState {
-    case disconnected
-    case connecting
-    case connected
-    case error
-}
-
-enum StreamSessionStatus {
-    case idle
-    case starting
-    case streaming
-    case stopping
-    case error
-}
-
-struct StreamConfig {
-    let width: Int
-    let height: Int
-    let frameRate: Int
 }

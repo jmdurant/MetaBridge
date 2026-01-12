@@ -1,194 +1,231 @@
+//
+//  SocketConnection.swift
+//  SpecBridge
+//
+//  Unix domain socket connection for communicating with Jitsi's react-native-webrtc
+//
+
 import Foundation
 
-/// Delegate protocol for socket connection events
-protocol SocketConnectionDelegate: AnyObject {
-    func socketDidConnect(_ socket: SocketConnection)
-    func socketDidDisconnect(_ socket: SocketConnection)
-    func socket(_ socket: SocketConnection, didReceiveError error: Error)
-}
-
-/// Unix domain socket connection for Jitsi screen share frame injection
 class SocketConnection: NSObject {
-    weak var delegate: SocketConnectionDelegate?
+    var didOpen: (() -> Void)?
+    var didClose: ((Error?) -> Void)?
+    var streamHasSpaceAvailable: (() -> Void)?
+
+    private let filePath: String
+    private var socketHandle: Int32 = -1
+    private var address: sockaddr_un?
 
     private var inputStream: InputStream?
     private var outputStream: OutputStream?
-    private var isConnected = false
 
-    private let socketPath: String
-    private let queue = DispatchQueue(label: "com.specbridge.socket", qos: .userInteractive)
+    private var networkQueue: DispatchQueue?
+    private var shouldKeepRunning = false
 
-    init(socketPath: String) {
-        self.socketPath = socketPath
+    init?(filePath path: String) {
+        filePath = path
+        socketHandle = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+
+        guard socketHandle != -1 else {
+            print("[SocketConnection] Failed to create socket")
+            return nil
+        }
+
         super.init()
     }
 
-    // MARK: - Connection
-
-    func connect() {
-        queue.async { [weak self] in
-            self?.connectInternal()
-        }
+    deinit {
+        close()
     }
 
-    private func connectInternal() {
-        // Clean up existing connection
-        disconnectInternal()
+    func open() -> Bool {
+        print("[SocketConnection] Opening socket connection to: \(filePath)")
 
-        // Create Unix domain socket streams
-        var readStream: Unmanaged<CFReadStream>?
-        var writeStream: Unmanaged<CFWriteStream>?
-
-        CFStreamCreatePairWithSocketToHost(
-            kCFAllocatorDefault,
-            socketPath as CFString,
-            0, // Port not used for Unix sockets
-            &readStream,
-            &writeStream
-        )
-
-        // For Unix domain sockets, we need to use a different approach
-        let socketFD = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard socketFD >= 0 else {
-            let error = NSError(domain: "SocketConnection", code: Int(errno),
-                               userInfo: [NSLocalizedDescriptionKey: "Failed to create socket"])
-            delegate?.socket(self, didReceiveError: error)
-            return
+        guard FileManager.default.fileExists(atPath: filePath) else {
+            print("[SocketConnection] Socket file does not exist at: \(filePath)")
+            return false
         }
 
-        var addr = sockaddr_un()
-        addr.sun_family = sa_family_t(AF_UNIX)
-        socketPath.withCString { ptr in
-            withUnsafeMutablePointer(to: &addr.sun_path.0) { dest in
-                _ = strcpy(dest, ptr)
-            }
+        guard setupAddress() else {
+            print("[SocketConnection] Failed to setup address")
+            return false
         }
 
-        let connectResult = withUnsafePointer(to: &addr) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
-                Darwin.connect(socketFD, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
-            }
+        guard connectSocket() else {
+            print("[SocketConnection] Failed to connect socket")
+            return false
         }
 
-        guard connectResult == 0 else {
-            close(socketFD)
-            let error = NSError(domain: "SocketConnection", code: Int(errno),
-                               userInfo: [NSLocalizedDescriptionKey: "Failed to connect: \(String(cString: strerror(errno)))"])
-            delegate?.socket(self, didReceiveError: error)
-            return
-        }
-
-        // Create streams from socket file descriptor
-        CFStreamCreatePairWithSocket(
-            kCFAllocatorDefault,
-            socketFD,
-            &readStream,
-            &writeStream
-        )
-
-        guard let input = readStream?.takeRetainedValue(),
-              let output = writeStream?.takeRetainedValue() else {
-            close(socketFD)
-            let error = NSError(domain: "SocketConnection", code: -1,
-                               userInfo: [NSLocalizedDescriptionKey: "Failed to create streams"])
-            delegate?.socket(self, didReceiveError: error)
-            return
-        }
-
-        // Configure streams to close socket when done
-        CFReadStreamSetProperty(input, CFStreamPropertyKey(kCFStreamPropertyShouldCloseNativeSocket), kCFBooleanTrue)
-        CFWriteStreamSetProperty(output, CFStreamPropertyKey(kCFStreamPropertyShouldCloseNativeSocket), kCFBooleanTrue)
-
-        inputStream = input as InputStream
-        outputStream = output as OutputStream
-
-        inputStream?.delegate = self
-        outputStream?.delegate = self
-
-        inputStream?.schedule(in: .main, forMode: .common)
-        outputStream?.schedule(in: .main, forMode: .common)
+        setupStreams()
 
         inputStream?.open()
         outputStream?.open()
 
-        isConnected = true
-        DispatchQueue.main.async {
-            self.delegate?.socketDidConnect(self)
-        }
+        print("[SocketConnection] Socket connection opened successfully")
+        return true
     }
 
-    func disconnect() {
-        queue.async { [weak self] in
-            self?.disconnectInternal()
-        }
-    }
+    func close() {
+        print("[SocketConnection] Closing socket connection")
 
-    private func disconnectInternal() {
+        unscheduleStreams()
+
+        inputStream?.delegate = nil
+        outputStream?.delegate = nil
+
         inputStream?.close()
         outputStream?.close()
-
-        inputStream?.remove(from: .main, forMode: .common)
-        outputStream?.remove(from: .main, forMode: .common)
 
         inputStream = nil
         outputStream = nil
 
-        if isConnected {
-            isConnected = false
-            DispatchQueue.main.async {
-                self.delegate?.socketDidDisconnect(self)
-            }
+        if socketHandle != -1 {
+            Darwin.close(socketHandle)
+            socketHandle = -1
         }
     }
 
-    // MARK: - Data Transfer
-
-    func write(_ data: Data) -> Bool {
-        guard isConnected, let output = outputStream, output.hasSpaceAvailable else {
-            return false
+    func writeToStream(buffer: UnsafePointer<UInt8>, maxLength length: Int) -> Int {
+        guard let outputStream = outputStream else {
+            print("[SocketConnection] Output stream not available")
+            return -1
         }
-
-        return data.withUnsafeBytes { bufferPtr -> Bool in
-            guard let baseAddress = bufferPtr.baseAddress else { return false }
-            let bytesWritten = output.write(baseAddress.assumingMemoryBound(to: UInt8.self), maxLength: data.count)
-            return bytesWritten == data.count
-        }
-    }
-
-    func writeAsync(_ data: Data, completion: ((Bool) -> Void)? = nil) {
-        queue.async { [weak self] in
-            let success = self?.write(data) ?? false
-            if let completion = completion {
-                DispatchQueue.main.async {
-                    completion(success)
-                }
-            }
-        }
+        return outputStream.write(buffer, maxLength: length)
     }
 }
 
 // MARK: - StreamDelegate
-
 extension SocketConnection: StreamDelegate {
     func stream(_ aStream: Stream, handle eventCode: Stream.Event) {
         switch eventCode {
         case .openCompleted:
-            break
+            print("[SocketConnection] Stream open completed")
+            if aStream == outputStream {
+                didOpen?()
+            }
+
         case .hasBytesAvailable:
-            // Read incoming data if needed
-            break
+            if aStream == inputStream {
+                var buffer: UInt8 = 0
+                let numberOfBytesRead = inputStream?.read(&buffer, maxLength: 1)
+                if numberOfBytesRead == 0 && aStream.streamStatus == .atEnd {
+                    print("[SocketConnection] Server closed connection")
+                    close()
+                    notifyDidClose(error: nil)
+                }
+            }
+
         case .hasSpaceAvailable:
-            break
+            if aStream == outputStream {
+                streamHasSpaceAvailable?()
+            }
+
         case .errorOccurred:
-            let error = aStream.streamError ?? NSError(domain: "SocketConnection", code: -1,
-                                                       userInfo: [NSLocalizedDescriptionKey: "Stream error"])
-            delegate?.socket(self, didReceiveError: error)
-            disconnectInternal()
+            print("[SocketConnection] Stream error: \(String(describing: aStream.streamError))")
+            close()
+            notifyDidClose(error: aStream.streamError)
+
         case .endEncountered:
-            delegate?.socketDidDisconnect(self)
-            disconnectInternal()
+            print("[SocketConnection] Stream end encountered")
+            close()
+            notifyDidClose(error: nil)
+
         default:
             break
         }
+    }
+}
+
+// MARK: - Private Methods
+private extension SocketConnection {
+    func setupAddress() -> Bool {
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+
+        guard filePath.count < MemoryLayout.size(ofValue: addr.sun_path) else {
+            print("[SocketConnection] File path is too long")
+            return false
+        }
+
+        _ = withUnsafeMutablePointer(to: &addr.sun_path.0) { ptr in
+            filePath.withCString {
+                strncpy(ptr, $0, filePath.count)
+            }
+        }
+
+        address = addr
+        return true
+    }
+
+    func connectSocket() -> Bool {
+        guard var addr = address else {
+            return false
+        }
+
+        let status = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(socketHandle, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+
+        guard status == noErr else {
+            print("[SocketConnection] Connect failed with status: \(status), errno: \(errno)")
+            return false
+        }
+
+        return true
+    }
+
+    func setupStreams() {
+        var readStream: Unmanaged<CFReadStream>?
+        var writeStream: Unmanaged<CFWriteStream>?
+
+        CFStreamCreatePairWithSocket(kCFAllocatorDefault, socketHandle, &readStream, &writeStream)
+
+        inputStream = readStream?.takeRetainedValue()
+        inputStream?.delegate = self
+        inputStream?.setProperty(
+            kCFBooleanTrue,
+            forKey: Stream.PropertyKey(kCFStreamPropertyShouldCloseNativeSocket as String)
+        )
+
+        outputStream = writeStream?.takeRetainedValue()
+        outputStream?.delegate = self
+        outputStream?.setProperty(
+            kCFBooleanTrue,
+            forKey: Stream.PropertyKey(kCFStreamPropertyShouldCloseNativeSocket as String)
+        )
+
+        scheduleStreams()
+    }
+
+    func scheduleStreams() {
+        shouldKeepRunning = true
+
+        networkQueue = DispatchQueue.global(qos: .userInitiated)
+        networkQueue?.async { [weak self] in
+            guard let self = self else { return }
+
+            self.inputStream?.schedule(in: .current, forMode: .common)
+            self.outputStream?.schedule(in: .current, forMode: .common)
+
+            var isRunning = false
+            repeat {
+                isRunning = self.shouldKeepRunning && RunLoop.current.run(mode: .default, before: .distantFuture)
+            } while isRunning
+        }
+    }
+
+    func unscheduleStreams() {
+        shouldKeepRunning = false
+
+        networkQueue?.sync { [weak self] in
+            self?.inputStream?.remove(from: .current, forMode: .common)
+            self?.outputStream?.remove(from: .current, forMode: .common)
+        }
+    }
+
+    func notifyDidClose(error: Error?) {
+        didClose?(error)
     }
 }

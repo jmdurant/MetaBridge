@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.ImageFormat
+import android.graphics.Matrix
 import android.graphics.Rect
 import android.graphics.YuvImage
 import com.meta.wearable.dat.core.Wearables
@@ -50,7 +51,11 @@ class StreamSessionManager(
     var frameCount: Long = 0
         private set
 
-    private val jpegQuality = 70
+    // Match iOS: 0.8 quality (80 in Android terms)
+    private val jpegQuality = 80
+
+    // Match iOS: 0.5x scaling for bandwidth optimization
+    private val scaleFactor = 0.5f
 
     // MARK: - Streaming Control
 
@@ -134,13 +139,31 @@ class StreamSessionManager(
 
             // Convert I420 to NV21 format which is supported by Android's YuvImage
             val nv21 = convertI420toNV21(byteArray, videoFrame.width, videoFrame.height)
-            val image = YuvImage(nv21, ImageFormat.NV21, videoFrame.width, videoFrame.height, null)
+            val yuvImage = YuvImage(nv21, ImageFormat.NV21, videoFrame.width, videoFrame.height, null)
 
+            // First pass: convert YUV to JPEG at full resolution
+            val fullResStream = ByteArrayOutputStream()
+            yuvImage.compressToJpeg(Rect(0, 0, videoFrame.width, videoFrame.height), 100, fullResStream)
+            val fullResJpeg = fullResStream.toByteArray()
+
+            // Decode to bitmap for scaling
+            val bitmap = BitmapFactory.decodeByteArray(fullResJpeg, 0, fullResJpeg.size)
+
+            // Scale to 0.5x (matching iOS)
+            val scaledWidth = (bitmap.width * scaleFactor).toInt()
+            val scaledHeight = (bitmap.height * scaleFactor).toInt()
+            val scaledBitmap = Bitmap.createScaledBitmap(bitmap, scaledWidth, scaledHeight, true)
+
+            // Compress scaled bitmap to JPEG
             ByteArrayOutputStream().use { stream ->
-                image.compressToJpeg(Rect(0, 0, videoFrame.width, videoFrame.height), jpegQuality, stream)
+                scaledBitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality, stream)
                 val jpegData = stream.toByteArray()
                 _frameFlow.tryEmit(jpegData)
             }
+
+            // Clean up bitmaps
+            bitmap.recycle()
+            scaledBitmap.recycle()
         } catch (e: Exception) {
             // Ignore frame processing errors
         }
