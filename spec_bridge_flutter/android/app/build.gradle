@@ -56,8 +56,9 @@ android {
             excludes += '/META-INF/{AL2.0,LGPL2.1}'
         }
         jniLibs {
-            // Don't compress native libs - helps SoLoader find them
-            useLegacyPackaging = false
+            // Use legacy packaging - extracts .so files to lib/ folder
+            // Required for Facebook SoLoader to find native libraries
+            useLegacyPackaging = true
             keepDebugSymbols += '**/*.so'
             pickFirsts += 'lib/**/libc++_shared.so'
             pickFirsts += 'lib/**/libfbjni.so'
@@ -75,6 +76,48 @@ shadowAar {
     repackages.put("com.facebook.jni", "shadow.meta.fbjni")
     repackages.put("com.facebook.common", "shadow.meta.fbcommon")
     repackages.put("com.facebook.proguard", "shadow.meta.proguard")
+}
+
+// Copy native libraries from Meta SDK AAR that shadow-aar doesn't handle
+// This ensures libairshield_light_mbed_jni.so and other native libs are included
+android.sourceSets.main.jniLibs.srcDirs += ['src/main/jniLibs']
+
+// Task to extract native libs from the Meta SDK AAR
+tasks.register('extractMetaNativeLibs') {
+    doLast {
+        def targetDir = file("${projectDir}/src/main/jniLibs")
+
+        // Find the mwdat-core AAR in gradle cache
+        configurations.implementationEmbed.resolvedConfiguration.resolvedArtifacts.each { artifact ->
+            if (artifact.name.contains('mwdat-core')) {
+                def aarFile = artifact.file
+                if (aarFile.name.endsWith('.aar')) {
+                    println "Extracting native libs from: ${aarFile}"
+                    copy {
+                        from zipTree(aarFile)
+                        into "${buildDir}/tmp/mwdat-core-aar"
+                        include 'jni/**/*.so'
+                    }
+                    // Copy to jniLibs with correct structure (lib/arm64-v8a/*.so)
+                    ['arm64-v8a', 'armeabi-v7a', 'x86', 'x86_64'].each { arch ->
+                        def sourceDir = file("${buildDir}/tmp/mwdat-core-aar/jni/${arch}")
+                        if (sourceDir.exists()) {
+                            copy {
+                                from sourceDir
+                                into "${targetDir}/${arch}"
+                                include '*.so'
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Run extraction before build
+tasks.matching { it.name.startsWith('merge') && it.name.contains('JniLibFolders') }.configureEach {
+    dependsOn 'extractMetaNativeLibs'
 }
 
 configurations.all {
