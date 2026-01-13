@@ -60,10 +60,8 @@
 	</array>
 
 	<!-- Meta Wearables DAT SDK Configuration -->
-	<key>MWDATAppKey</key>
-	<string>YOUR_META_APP_KEY_HERE</string>
-	<key>MWDATClientToken</key>
-	<string>YOUR_META_CLIENT_TOKEN_HERE</string>
+	<key>MetaAppID</key>
+	<string>886814173816275</string>
 	<key>MWDATCallbackURLScheme</key>
 	<string>specbridge</string>
 
