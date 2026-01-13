@@ -369,6 +369,25 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
               tooltip: _backgroundMode ? 'Disable Background Mode' : 'Enable Background Mode',
             ),
 
+          // E2EE status indicator (lib-jitsi-meet mode)
+          if (_jitsiMode == JitsiMode.libJitsiMeet)
+            Consumer<LibJitsiService>(
+              builder: (context, libJitsiService, _) {
+                final isE2EE = libJitsiService.currentState.isE2EEEnabled;
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  child: Tooltip(
+                    message: isE2EE ? 'E2EE Active' : 'E2EE Inactive',
+                    child: Icon(
+                      isE2EE ? Icons.lock : Icons.lock_open,
+                      color: isE2EE ? Colors.green : Colors.grey,
+                      size: 20,
+                    ),
+                  ),
+                );
+              },
+            ),
+
           // Stats toggle button (only for lib-jitsi-meet mode)
           if (_jitsiMode == JitsiMode.libJitsiMeet)
             IconButton(

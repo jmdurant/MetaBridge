@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 import '../../../app/routes.dart';
+import '../../../data/models/app_settings.dart';
 import '../../../data/models/glasses_state.dart';
 import '../../../data/models/meeting_config.dart';
 import '../../../services/glasses_service.dart';
@@ -20,9 +21,11 @@ class SetupScreen extends StatefulWidget {
 class _SetupScreenState extends State<SetupScreen> {
   final _roomController = TextEditingController(text: 'SpecBridgeRoom');
   final _nameController = TextEditingController(text: 'SpecBridge User');
+  final _e2eePassphraseController = TextEditingController();
 
   bool _isConnecting = false;
   bool _permissionsGranted = false;
+  bool _enableE2EE = false;
 
   @override
   void initState() {
@@ -45,6 +48,7 @@ class _SetupScreenState extends State<SetupScreen> {
   void dispose() {
     _roomController.dispose();
     _nameController.dispose();
+    _e2eePassphraseController.dispose();
     super.dispose();
   }
 
@@ -89,12 +93,22 @@ class _SetupScreenState extends State<SetupScreen> {
       return;
     }
 
+    // Validate E2EE passphrase if enabled
+    if (_enableE2EE && _e2eePassphraseController.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please enter an E2EE passphrase')),
+      );
+      return;
+    }
+
     final settings = context.read<SettingsService>().settings;
     final displayName = _nameController.text.trim();
     final config = MeetingConfig(
       roomName: _roomController.text.trim(),
       serverUrl: settings.defaultServer,
       displayName: displayName.isEmpty ? 'SpecBridge User' : displayName,
+      enableE2EE: _enableE2EE,
+      e2eePassphrase: _enableE2EE ? _e2eePassphraseController.text.trim() : null,
     );
 
     context.go('/streaming', extra: config);
@@ -159,7 +173,26 @@ class _SetupScreenState extends State<SetupScreen> {
               title: 'Meeting Configuration',
               child: _buildMeetingCard(),
             ),
-            const SizedBox(height: 32),
+            const SizedBox(height: 24),
+
+            // E2EE Section (only for lib-jitsi-meet mode)
+            Consumer<SettingsService>(
+              builder: (context, settingsService, _) {
+                if (settingsService.settings.jitsiMode != JitsiMode.libJitsiMeet) {
+                  return const SizedBox.shrink();
+                }
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _buildSection(
+                      title: 'End-to-End Encryption',
+                      child: _buildE2EECard(),
+                    ),
+                    const SizedBox(height: 24),
+                  ],
+                );
+              },
+            ),
 
             // Start Streaming Button
             Consumer<GlassesService>(
@@ -319,6 +352,48 @@ class _SetupScreenState extends State<SetupScreen> {
                 prefixIcon: Icon(Icons.person),
               ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildE2EECard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SwitchListTile(
+              title: const Text('Enable E2EE'),
+              subtitle: const Text('All participants must use the same passphrase'),
+              secondary: Icon(
+                _enableE2EE ? Icons.lock : Icons.lock_open,
+                color: _enableE2EE ? Colors.green : Colors.grey,
+              ),
+              value: _enableE2EE,
+              onChanged: (value) => setState(() => _enableE2EE = value),
+              contentPadding: EdgeInsets.zero,
+            ),
+            if (_enableE2EE) ...[
+              const SizedBox(height: 12),
+              TextField(
+                controller: _e2eePassphraseController,
+                decoration: const InputDecoration(
+                  labelText: 'E2EE Passphrase',
+                  hintText: 'Enter shared passphrase',
+                  prefixIcon: Icon(Icons.key),
+                  border: OutlineInputBorder(),
+                ),
+                obscureText: true,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Share this passphrase securely with other participants',
+                style: TextStyle(color: Colors.grey[600], fontSize: 12),
+              ),
+            ],
           ],
         ),
       ),

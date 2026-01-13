@@ -61,6 +61,7 @@ class LibJitsiState {
   final bool isInMeeting;
   final bool isAudioMuted;
   final bool isVideoMuted;
+  final bool isE2EEEnabled;
   final String? roomName;
   final String? errorMessage;
   final int participantCount;
@@ -70,6 +71,7 @@ class LibJitsiState {
     this.isInMeeting = false,
     this.isAudioMuted = false,
     this.isVideoMuted = true,
+    this.isE2EEEnabled = false,
     this.roomName,
     this.errorMessage,
     this.participantCount = 0,
@@ -80,6 +82,7 @@ class LibJitsiState {
     bool? isInMeeting,
     bool? isAudioMuted,
     bool? isVideoMuted,
+    bool? isE2EEEnabled,
     String? roomName,
     String? errorMessage,
     int? participantCount,
@@ -89,6 +92,7 @@ class LibJitsiState {
       isInMeeting: isInMeeting ?? this.isInMeeting,
       isAudioMuted: isAudioMuted ?? this.isAudioMuted,
       isVideoMuted: isVideoMuted ?? this.isVideoMuted,
+      isE2EEEnabled: isE2EEEnabled ?? this.isE2EEEnabled,
       roomName: roomName ?? this.roomName,
       errorMessage: errorMessage,
       participantCount: participantCount ?? this.participantCount,
@@ -212,6 +216,18 @@ class LibJitsiService extends ChangeNotifier {
           participantCount: (_currentState.participantCount - 1).clamp(0, 999),
         ));
         break;
+
+      case 'e2eeEnabled':
+        _updateState(_currentState.copyWith(isE2EEEnabled: true));
+        break;
+
+      case 'e2eeDisabled':
+        _updateState(_currentState.copyWith(isE2EEEnabled: false));
+        break;
+
+      case 'e2eeError':
+        debugPrint('LibJitsiService: E2EE error: ${data['message']}');
+        break;
     }
   }
 
@@ -235,11 +251,13 @@ class LibJitsiService extends ChangeNotifier {
     final server = config.serverUrl ?? 'https://meet.jit.si';
     final room = config.roomName;
     final displayName = config.displayName ?? 'SpecBridge User';
+    final enableE2EE = config.enableE2EE;
+    final e2eePassphrase = config.e2eePassphrase ?? '';
 
-    debugPrint('LibJitsiService: Joining $room on $server as $displayName');
+    debugPrint('LibJitsiService: Joining $room on $server as $displayName (E2EE: $enableE2EE)');
 
     await _controller?.evaluateJavascript(
-      source: 'joinRoom("$server", "$room", "$displayName")',
+      source: 'joinRoom("$server", "$room", "$displayName", $enableE2EE, "$e2eePassphrase")',
     );
   }
 

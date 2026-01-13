@@ -13,6 +13,10 @@ let localVideoTrack = null;
 let isJoined = false;
 let isAudioMuted = false;
 let isVideoMuted = false;
+let isE2EEEnabled = false;
+
+// E2EE config (stored from joinRoom call)
+let e2eeConfig = { enabled: false, passphrase: '' };
 
 // Canvas setup
 const canvas = document.getElementById('videoCanvas');
@@ -62,8 +66,12 @@ function initJitsi() {
 }
 
 // Join a room
-async function joinRoom(server, room, displayName) {
+async function joinRoom(server, room, displayName, enableE2EE = false, e2eePassphrase = '') {
   updateStatus('Connecting to ' + server + '...');
+
+  // Store E2EE config for use after joining
+  e2eeConfig = { enabled: enableE2EE, passphrase: e2eePassphrase };
+  console.log('[JitsiBridge] E2EE config:', enableE2EE ? 'enabled' : 'disabled');
 
   try {
     // Parse server URL
@@ -117,11 +125,14 @@ async function onConnectionEstablished(room, displayName) {
   updateStatus('Connected, joining room: ' + room);
 
   try {
-    // Initialize conference
+    // Initialize conference with E2EE support
     conference = connection.initJitsiConference(room.toLowerCase(), {
       openBridgeChannel: true,
       p2p: {
         enabled: true
+      },
+      e2ee: {
+        enabled: e2eeConfig.enabled
       }
     });
 
@@ -156,10 +167,21 @@ async function onConnectionEstablished(room, displayName) {
     }
 
     // Conference event listeners
-    conference.on(JitsiMeetJS.events.conference.CONFERENCE_JOINED, () => {
+    conference.on(JitsiMeetJS.events.conference.CONFERENCE_JOINED, async () => {
       isJoined = true;
       updateStatus('Joined room: ' + room);
-      notifyFlutter('joined', { room: room });
+
+      // Enable E2EE if configured
+      if (e2eeConfig.enabled && e2eeConfig.passphrase) {
+        try {
+          await setupE2EE(e2eeConfig.passphrase);
+        } catch (e) {
+          console.error('[JitsiBridge] E2EE setup failed:', e);
+          notifyFlutter('e2eeError', { message: e.message || String(e) });
+        }
+      }
+
+      notifyFlutter('joined', { room: room, e2ee: e2eeConfig.enabled });
     });
 
     conference.on(JitsiMeetJS.events.conference.CONFERENCE_LEFT, () => {
@@ -269,7 +291,8 @@ function getStats() {
     totalBytes: totalBytesReceived,
     isJoined: isJoined,
     hasAudioTrack: localAudioTrack !== null,
-    hasVideoTrack: localVideoTrack !== null
+    hasVideoTrack: localVideoTrack !== null,
+    isE2EEEnabled: isE2EEEnabled
   };
 }
 
@@ -317,6 +340,54 @@ function toggleVideo() {
   return isVideoMuted;
 }
 
+// E2EE functions
+async function setupE2EE(passphrase) {
+  if (!conference) {
+    throw new Error('Not in a conference');
+  }
+
+  try {
+    console.log('[JitsiBridge] Setting up E2EE...');
+
+    // Set the encryption key from passphrase
+    await conference.setMediaEncryptionKey({
+      encryptionKey: passphrase,
+      index: 0
+    });
+
+    // Enable E2EE
+    await conference.toggleE2EE(true);
+
+    isE2EEEnabled = true;
+    updateStatus('E2EE enabled');
+    notifyFlutter('e2eeEnabled', {});
+
+    console.log('[JitsiBridge] E2EE enabled successfully');
+    return true;
+  } catch (e) {
+    console.error('[JitsiBridge] E2EE enable failed:', e);
+    isE2EEEnabled = false;
+    throw e;
+  }
+}
+
+async function disableE2EE() {
+  if (!conference) return;
+
+  try {
+    await conference.toggleE2EE(false);
+    isE2EEEnabled = false;
+    updateStatus('E2EE disabled');
+    notifyFlutter('e2eeDisabled', {});
+  } catch (e) {
+    console.error('[JitsiBridge] E2EE disable failed:', e);
+  }
+}
+
+function isE2EE() {
+  return isE2EEEnabled;
+}
+
 // Leave the room
 function leaveRoom() {
   updateStatus('Leaving room...');
@@ -340,7 +411,9 @@ function leaveRoom() {
     }
 
     isJoined = false;
+    isE2EEEnabled = false;
     canvasStream = null;
+    e2eeConfig = { enabled: false, passphrase: '' };
     updateStatus('Left room');
     notifyFlutter('left', {});
   } catch (e) {
@@ -371,6 +444,9 @@ window.toggleAudio = toggleAudio;
 window.toggleVideo = toggleVideo;
 window.getState = getState;
 window.getStats = getStats;
+window.setupE2EE = setupE2EE;
+window.disableE2EE = disableE2EE;
+window.isE2EE = isE2EE;
 
 // Auto-initialize when script loads
 if (typeof JitsiMeetJS !== 'undefined') {

@@ -7,6 +7,8 @@ class MeetingConfig extends Equatable {
   final String displayName;
   final bool startWithVideoMuted;
   final bool startWithAudioMuted;
+  final bool enableE2EE;
+  final String? e2eePassphrase;
 
   const MeetingConfig({
     required this.roomName,
@@ -14,6 +16,8 @@ class MeetingConfig extends Equatable {
     this.displayName = 'SpecBridge User',
     this.startWithVideoMuted = true,
     this.startWithAudioMuted = false,
+    this.enableE2EE = false,
+    this.e2eePassphrase,
   });
 
   /// Creates a meeting URL for sharing
@@ -28,6 +32,8 @@ class MeetingConfig extends Equatable {
     String? displayName,
     bool? startWithVideoMuted,
     bool? startWithAudioMuted,
+    bool? enableE2EE,
+    String? e2eePassphrase,
   }) {
     return MeetingConfig(
       roomName: roomName ?? this.roomName,
@@ -35,6 +41,8 @@ class MeetingConfig extends Equatable {
       displayName: displayName ?? this.displayName,
       startWithVideoMuted: startWithVideoMuted ?? this.startWithVideoMuted,
       startWithAudioMuted: startWithAudioMuted ?? this.startWithAudioMuted,
+      enableE2EE: enableE2EE ?? this.enableE2EE,
+      e2eePassphrase: e2eePassphrase ?? this.e2eePassphrase,
     );
   }
 
@@ -43,11 +51,15 @@ class MeetingConfig extends Equatable {
     required String roomName,
     String? serverUrl,
     String? displayName,
+    bool? enableE2EE,
+    String? e2eePassphrase,
   }) {
     return MeetingConfig(
       roomName: roomName,
       serverUrl: serverUrl ?? 'https://meet.jit.si',
       displayName: displayName ?? 'SpecBridge User',
+      enableE2EE: enableE2EE ?? false,
+      e2eePassphrase: e2eePassphrase,
     );
   }
 
@@ -58,5 +70,7 @@ class MeetingConfig extends Equatable {
         displayName,
         startWithVideoMuted,
         startWithAudioMuted,
+        enableE2EE,
+        e2eePassphrase,
       ];
 }
