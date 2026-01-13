@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import '../data/models/meeting_config.dart';
+import 'frame_websocket_server.dart';
 
 /// Stats from the lib-jitsi-meet WebView
 class LibJitsiStats {
@@ -14,10 +15,16 @@ class LibJitsiStats {
   final int fps;
   final int bitrate; // kbps
   final int totalFrames;
+  final int framesDrawn;
+  final int framesDroppedJs;
+  final int jsDropRate;
+  final int lastDecodeMs;
+  final int avgDecodeMs;
   final int totalBytes;
   final bool isJoined;
   final bool hasAudioTrack;
   final bool hasVideoTrack;
+  final bool wsConnected;
 
   const LibJitsiStats({
     this.resolution = '0x0',
@@ -26,10 +33,16 @@ class LibJitsiStats {
     this.fps = 0,
     this.bitrate = 0,
     this.totalFrames = 0,
+    this.framesDrawn = 0,
+    this.framesDroppedJs = 0,
+    this.jsDropRate = 0,
+    this.lastDecodeMs = 0,
+    this.avgDecodeMs = 0,
     this.totalBytes = 0,
     this.isJoined = false,
     this.hasAudioTrack = false,
     this.hasVideoTrack = false,
+    this.wsConnected = false,
   });
 
   factory LibJitsiStats.fromJson(Map<String, dynamic> json) {
@@ -40,10 +53,16 @@ class LibJitsiStats {
       fps: json['fps'] as int? ?? 0,
       bitrate: json['bitrate'] as int? ?? 0,
       totalFrames: json['totalFrames'] as int? ?? 0,
+      framesDrawn: json['framesDrawn'] as int? ?? 0,
+      framesDroppedJs: json['framesDroppedJs'] as int? ?? 0,
+      jsDropRate: json['jsDropRate'] as int? ?? 0,
+      lastDecodeMs: json['lastDecodeMs'] as int? ?? 0,
+      avgDecodeMs: json['avgDecodeMs'] as int? ?? 0,
       totalBytes: json['totalBytes'] as int? ?? 0,
       isJoined: json['isJoined'] as bool? ?? false,
       hasAudioTrack: json['hasAudioTrack'] as bool? ?? false,
       hasVideoTrack: json['hasVideoTrack'] as bool? ?? false,
+      wsConnected: json['wsConnected'] as bool? ?? false,
     );
   }
 
@@ -110,9 +129,10 @@ class LibJitsiService extends ChangeNotifier {
   LibJitsiState _currentState = const LibJitsiState();
   MeetingConfig? _pendingConfig;
 
-  // Frame sending throttle
-  DateTime _lastFrameSent = DateTime.now();
-  static const _minFrameInterval = Duration(milliseconds: 33); // ~30fps max
+  // WebSocket server for fast binary frame transfer
+  final FrameWebSocketServer _wsServer = FrameWebSocketServer();
+
+  // No throttle - let JavaScript handle frame dropping with "latest frame wins"
 
   // Pause state - don't send frames when WebView is paused
   bool _isPaused = false;
@@ -124,6 +144,7 @@ class LibJitsiService extends ChangeNotifier {
   MeetingConfig? get pendingConfig => _pendingConfig;
   bool get isInMeeting => _currentState.isInMeeting;
   bool get backgroundModeEnabled => _backgroundModeEnabled;
+  FrameWebSocketServer get wsServer => _wsServer;
 
   /// Enable or disable background mode
   /// When enabled, the WebView won't be paused when the app goes to background
@@ -136,6 +157,13 @@ class LibJitsiService extends ChangeNotifier {
   void setController(InAppWebViewController controller) {
     _controller = controller;
     _setupJavaScriptHandlers(controller);
+
+    // Start WebSocket server early so JS can connect when it initializes
+    if (!_wsServer.isRunning) {
+      _wsServer.start().then((success) {
+        debugPrint('LibJitsiService: WebSocket server started: $success');
+      });
+    }
   }
 
   void _setupJavaScriptHandlers(InAppWebViewController controller) {
@@ -241,6 +269,11 @@ class LibJitsiService extends ChangeNotifier {
     _pendingConfig = config;
     notifyListeners();
 
+    // Start WebSocket server for frame transfer
+    if (!_wsServer.isRunning) {
+      await _wsServer.start();
+    }
+
     if (_currentState.isInitialized && _controller != null) {
       await _joinWithConfig(config);
     }
@@ -264,22 +297,32 @@ class LibJitsiService extends ChangeNotifier {
   /// Leave the current meeting
   Future<void> leaveMeeting() async {
     await _controller?.evaluateJavascript(source: 'leaveRoom()');
+    await _wsServer.stop();
     _pendingConfig = null;
   }
 
   // Frame counter for debug logging
   int _frameSentCount = 0;
+  int _framesDropped = 0;
 
-  /// Send a video frame to the WebView canvas
+  /// Get Flutter-side frame stats
+  Map<String, dynamic> getFlutterStats() {
+    final dropRate = (_frameSentCount + _framesDropped) > 0
+        ? (_framesDropped * 100 / (_frameSentCount + _framesDropped)).round()
+        : 0;
+    return {
+      'framesSent': _frameSentCount,
+      'framesDropped': _framesDropped,
+      'dropRate': dropRate,
+    };
+  }
+
+  /// Send a video frame to the WebView via WebSocket
   ///
-  /// Frames are JPEG-encoded and sent as base64.
-  /// Throttled to ~30fps max to avoid overwhelming the JS bridge.
+  /// Frames are sent as raw JPEG bytes over WebSocket - no base64 encoding!
+  /// This is much faster than evaluateJavascript with base64 strings.
   void sendFrame(Uint8List jpegData) {
-    // Don't send frames when paused - they'll just queue up
-    if (_controller == null) {
-      if (_frameSentCount == 0) debugPrint('LibJitsiService.sendFrame: controller is null');
-      return;
-    }
+    // Don't send frames when paused
     if (!_currentState.isInMeeting) {
       if (_frameSentCount == 0) debugPrint('LibJitsiService.sendFrame: not in meeting yet');
       return;
@@ -288,23 +331,22 @@ class LibJitsiService extends ChangeNotifier {
       if (_frameSentCount == 0) debugPrint('LibJitsiService.sendFrame: WebView is paused');
       return;
     }
-
-    // Throttle frame rate
-    final now = DateTime.now();
-    if (now.difference(_lastFrameSent) < _minFrameInterval) {
+    if (!_wsServer.hasClient) {
+      if (_frameSentCount == 0) debugPrint('LibJitsiService.sendFrame: WebSocket client not connected');
       return;
     }
-    _lastFrameSent = now;
 
     _frameSentCount++;
+
     if (_frameSentCount == 1) {
-      debugPrint('LibJitsiService: Sending first frame to WebView (${jpegData.length} bytes)');
+      debugPrint('LibJitsiService: Sending first frame via WebSocket (${jpegData.length} bytes)');
+    }
+    if (_frameSentCount % 100 == 0) {
+      debugPrint('LibJitsiService: Sent $_frameSentCount frames, dropped $_framesDropped (${(_framesDropped * 100 / (_frameSentCount + _framesDropped)).toStringAsFixed(1)}% drop rate)');
     }
 
-    final base64Data = base64Encode(jpegData);
-    _controller?.evaluateJavascript(
-      source: 'drawFrame("$base64Data")',
-    );
+    // Send raw bytes via WebSocket - no base64!
+    _wsServer.sendFrame(jpegData);
   }
 
   /// Set video resolution
@@ -434,10 +476,13 @@ class LibJitsiService extends ChangeNotifier {
         allowUniversalAccessFromFileURLs: true,
         // Allow mixed content for local assets
         mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
+        // Hardware acceleration for WebGL
+        hardwareAcceleration: true,
       );
 
   @override
   void dispose() {
+    _wsServer.stop();
     _controller = null;
     super.dispose();
   }

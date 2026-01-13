@@ -25,6 +25,7 @@
         android:label="SpecBridge"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
+        android:networkSecurityConfig="@xml/network_security_config"
         tools:replace="android:label">
 
         <!-- Meta Wearables SDK Configuration -->

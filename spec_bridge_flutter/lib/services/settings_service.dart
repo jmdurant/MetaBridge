@@ -6,6 +6,7 @@ import '../data/models/app_settings.dart';
 class SettingsService extends ChangeNotifier {
   static const _keyDefaultServer = 'default_server';
   static const _keyDisplayName = 'display_name';
+  static const _keyShowPipelineStats = 'show_pipeline_stats';
 
   AppSettings _settings = const AppSettings();
 
@@ -19,6 +20,7 @@ class SettingsService extends ChangeNotifier {
       // Use community server - meet.jit.si requires login to be moderator
       defaultServer: prefs.getString(_keyDefaultServer) ?? 'https://meet.ffmuc.net',
       displayName: prefs.getString(_keyDisplayName),
+      showPipelineStats: prefs.getBool(_keyShowPipelineStats) ?? true,
     );
 
     notifyListeners();
@@ -39,6 +41,13 @@ class SettingsService extends ChangeNotifier {
       await prefs.remove(_keyDisplayName);
     }
     _settings = _settings.copyWith(displayName: name);
+    notifyListeners();
+  }
+
+  Future<void> setShowPipelineStats(bool show) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyShowPipelineStats, show);
+    _settings = _settings.copyWith(showPipelineStats: show);
     notifyListeners();
   }
 }

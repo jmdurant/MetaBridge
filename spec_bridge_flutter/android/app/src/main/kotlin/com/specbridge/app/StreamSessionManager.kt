@@ -1,9 +1,6 @@
 package com.specbridge.app
 
 import android.content.Context
-import android.graphics.ImageFormat
-import android.graphics.Rect
-import android.graphics.YuvImage
 import com.meta.wearable.dat.core.Wearables
 import com.meta.wearable.dat.camera.StreamSession
 import com.meta.wearable.dat.camera.startStreamSession
@@ -25,11 +22,17 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 /**
  * Manages video streaming session from Meta glasses on Android
  * Based on the official CameraAccess sample app
+ *
+ * Frame format: Raw I420 with 8-byte header
+ * - Bytes 0-3: width (uint32 little-endian)
+ * - Bytes 4-7: height (uint32 little-endian)
+ * - Bytes 8+: I420 data (Y plane, then U plane, then V plane)
  */
 class StreamSessionManager(
     private val context: Context,
@@ -49,6 +52,28 @@ class StreamSessionManager(
 
     var frameCount: Long = 0
         private set
+
+    var framesProcessed: Long = 0
+        private set
+
+    // Encoding time tracking
+    private var totalEncodeTimeMs: Long = 0
+    private var lastEncodeTimeMs: Long = 0
+
+    /**
+     * Get current streaming stats for debugging/monitoring
+     */
+    fun getStats(): Map<String, Any> {
+        val avgEncodeTime = if (framesProcessed > 0) totalEncodeTimeMs / framesProcessed else 0
+        return mapOf(
+            "framesReceived" to frameCount,
+            "framesProcessed" to framesProcessed,
+            "framesSkipped" to framesSkipped,
+            "skipRate" to if (frameCount > 0) (framesSkipped * 100 / frameCount).toInt() else 0,
+            "lastEncodeTimeMs" to lastEncodeTimeMs,
+            "avgEncodeTimeMs" to avgEncodeTime
+        )
+    }
 
     // MARK: - Streaming Control
 
@@ -143,68 +168,75 @@ class StreamSessionManager(
 
     // MARK: - Frame Processing
 
-    // Reusable buffer to avoid allocations
+    // Reusable buffers to avoid allocations
     private var frameBuffer: ByteArray? = null
-    private var outputStream = ByteArrayOutputStream(50000)
+    private var outputBuffer: ByteArray? = null
+
+    // Frame rate limiting - process all frames, let JS drop if needed
+    private var framesSkipped = 0L
 
     private fun processFrame(videoFrame: VideoFrame) {
         frameCount++
+        val processStartTime = System.currentTimeMillis()
 
+        // Log first frame and every 100 frames
         if (frameCount == 1L) {
-            android.util.Log.d("StreamSessionManager", "First frame received from glasses: ${videoFrame.width}x${videoFrame.height}")
+            android.util.Log.d("StreamSessionManager", "First frame received from glasses: ${videoFrame.width}x${videoFrame.height} (sending raw I420)")
         }
         if (frameCount % 100 == 0L) {
-            android.util.Log.d("StreamSessionManager", "Processed $frameCount frames from glasses")
+            android.util.Log.d("StreamSessionManager", "Frames: $frameCount received, $framesProcessed sent (raw I420)")
         }
 
         try {
             // VideoFrame contains raw I420 video data in a ByteBuffer
             val buffer = videoFrame.buffer
             val dataSize = buffer.remaining()
+            val width = videoFrame.width
+            val height = videoFrame.height
 
-            // Reuse buffer if possible
+            // Calculate expected I420 size: Y (w*h) + U (w*h/4) + V (w*h/4) = w*h*1.5
+            val expectedSize = width * height * 3 / 2
+            if (dataSize < expectedSize) {
+                android.util.Log.w("StreamSessionManager", "Frame data size mismatch: got $dataSize, expected $expectedSize")
+                return
+            }
+
+            // Reuse frame buffer if possible
             if (frameBuffer == null || frameBuffer!!.size < dataSize) {
                 frameBuffer = ByteArray(dataSize)
             }
 
-            // Save current position
+            // Save current position and read data
             val originalPosition = buffer.position()
             buffer.get(frameBuffer!!, 0, dataSize)
-            // Restore position
             buffer.position(originalPosition)
 
-            // Convert I420 to NV21 format which is supported by Android's YuvImage
-            val nv21 = convertI420toNV21(frameBuffer!!, videoFrame.width, videoFrame.height)
-            val yuvImage = YuvImage(nv21, ImageFormat.NV21, videoFrame.width, videoFrame.height, null)
+            // Create output buffer: 8-byte header + I420 data
+            val outputSize = 8 + expectedSize
+            if (outputBuffer == null || outputBuffer!!.size < outputSize) {
+                outputBuffer = ByteArray(outputSize)
+            }
 
-            // Single pass: compress directly to JPEG (matching official sample approach)
-            // Using 50% quality like official sample for speed
-            outputStream.reset()
-            yuvImage.compressToJpeg(Rect(0, 0, videoFrame.width, videoFrame.height), 50, outputStream)
+            // Write header (width, height as little-endian uint32)
+            val headerBuffer = ByteBuffer.wrap(outputBuffer!!, 0, 8).order(ByteOrder.LITTLE_ENDIAN)
+            headerBuffer.putInt(width)
+            headerBuffer.putInt(height)
 
-            _frameFlow.tryEmit(outputStream.toByteArray())
+            // Copy I420 data after header
+            frameBuffer!!.copyInto(outputBuffer!!, 8, 0, expectedSize)
+
+            // Emit the raw frame with header
+            _frameFlow.tryEmit(outputBuffer!!.copyOf(outputSize))
+
+            // Track processing time (should be minimal now - no encoding!)
+            framesProcessed++
+            lastEncodeTimeMs = System.currentTimeMillis() - processStartTime
+            totalEncodeTimeMs += lastEncodeTimeMs
         } catch (e: Exception) {
             if (frameCount < 10) {
                 android.util.Log.e("StreamSessionManager", "Frame processing error: ${e.message}")
             }
         }
-    }
-
-    // Convert I420 (YYYYYYYY:UUVV) to NV21 (YYYYYYYY:VUVU)
-    private fun convertI420toNV21(input: ByteArray, width: Int, height: Int): ByteArray {
-        val output = ByteArray(input.size)
-        val size = width * height
-        val quarter = size / 4
-
-        // Y plane is the same
-        input.copyInto(output, 0, 0, size)
-
-        // Interleave U and V planes (V first for NV21)
-        for (n in 0 until quarter) {
-            output[size + n * 2] = input[size + quarter + n] // V first
-            output[size + n * 2 + 1] = input[size + n] // U second
-        }
-        return output
     }
 
     // MARK: - Cleanup

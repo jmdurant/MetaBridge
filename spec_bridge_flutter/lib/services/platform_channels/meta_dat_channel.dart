@@ -72,6 +72,9 @@ abstract class MetaDATChannel {
   /// Disconnect from glasses
   Future<void> disconnect();
 
+  /// Get streaming stats from native side
+  Future<Map<String, dynamic>> getStreamStats();
+
   /// Event stream for connection/status updates
   Stream<MetaDATEvent> get eventStream;
 
@@ -256,6 +259,20 @@ class MetaDATChannelImpl implements MetaDATChannel {
       await _methodChannel.invokeMethod<void>('disconnect');
     } on PlatformException {
       // Ignore errors on disconnect
+    }
+  }
+
+  @override
+  Future<Map<String, dynamic>> getStreamStats() async {
+    try {
+      final result =
+          await _methodChannel.invokeMethod<Map<Object?, Object?>>('getStreamStats');
+      if (result != null) {
+        return result.map((k, v) => MapEntry(k.toString(), v));
+      }
+      return {};
+    } on PlatformException {
+      return {};
     }
   }
 

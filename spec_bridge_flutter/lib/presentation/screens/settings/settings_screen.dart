@@ -49,6 +49,18 @@ class SettingsScreen extends StatelessWidget {
                   },
                 ),
               ),
+              const SizedBox(height: 16),
+              const Divider(),
+              const _SectionHeader('Developer Options'),
+              SwitchListTile(
+                title: const Text('Show Pipeline Stats'),
+                subtitle: const Text('Display frame rates, CPU usage, and encoding stats during streaming'),
+                secondary: const Icon(Icons.analytics_outlined),
+                value: settings.showPipelineStats,
+                onChanged: (value) {
+                  settingsService.setShowPipelineStats(value);
+                },
+              ),
               const SizedBox(height: 32),
               const Padding(
                 padding: EdgeInsets.all(16),

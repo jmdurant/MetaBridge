@@ -13,7 +13,10 @@
       overflow: hidden;
     }
     #videoCanvas {
-      display: none;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #000;
     }
     #status {
       position: fixed;
@@ -30,7 +33,8 @@
   </style>
 </head>
 <body>
-  <canvas id="videoCanvas" width="1280" height="720"></canvas>
+  <!-- Canvas matches glasses MEDIUM quality: 504x896 (portrait 9:16) -->
+  <canvas id="videoCanvas" width="504" height="896"></canvas>
   <div id="status">Initializing...</div>
 
   <!-- lib-jitsi-meet from CDN -->

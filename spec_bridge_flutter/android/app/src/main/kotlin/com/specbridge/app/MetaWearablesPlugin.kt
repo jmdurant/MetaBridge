@@ -57,6 +57,7 @@ class MetaWearablesPlugin(
             }
             "stopStreaming" -> stopStreaming(result)
             "disconnect" -> disconnect(result)
+            "getStreamStats" -> getStreamStats(result)
             else -> result.notImplemented()
         }
     }
@@ -220,16 +221,15 @@ class MetaWearablesPlugin(
         // Observe frames
         scope.launch {
             streamManager!!.frameFlow.collectLatest { frameData ->
-                // Send to floating overlay for MediaProjection capture
-                if (FloatingPreviewService.isRunning()) {
-                    FloatingPreviewService.updateFrame(frameData)
-                    // Skip Flutter preview - overlay covers everything anyway
-                } else {
-                    // Send to Flutter for preview (every 3rd frame) only if no overlay
-                    if (streamManager!!.frameCount % 3 == 0L) {
-                        sendFrame(frameData)
-                    }
-                }
+                // Note: frameData is now raw I420 with 8-byte header, not JPEG
+                // FloatingPreviewService expects JPEG, so skip it for now
+                // TODO: Re-enable when screen share is implemented with I420 support
+                // if (FloatingPreviewService.isRunning()) {
+                //     FloatingPreviewService.updateFrame(frameData)
+                // }
+
+                // Send all frames to Flutter - WebSocket can handle the throughput
+                sendFrame(frameData)
             }
         }
 
@@ -270,10 +270,8 @@ class MetaWearablesPlugin(
                         FloatingPreviewService.updateFrame(frameData)
                         // Skip Flutter preview - overlay covers everything anyway
                     } else {
-                        // Send to Flutter for preview (every 3rd frame) only if no overlay
-                        if (camera.frameCount % 3 == 0L) {
-                            sendFrame(frameData)
-                        }
+                        // Send all frames to Flutter - WebSocket can handle the throughput
+                        sendFrame(frameData)
                     }
                 }
             }
@@ -300,6 +298,69 @@ class MetaWearablesPlugin(
                 "status" to "stopped"
             ))
             result.success(null)
+        }
+    }
+
+    private fun getStreamStats(result: MethodChannel.Result) {
+        val stats = mutableMapOf<String, Any>()
+
+        // Get stream manager stats (glasses or camera)
+        streamManager?.let {
+            stats.putAll(it.getStats())
+        }
+
+        // Add CPU usage
+        try {
+            val cpuUsage = getCpuUsage()
+            stats["cpuUsage"] = cpuUsage
+        } catch (e: Exception) {
+            stats["cpuUsage"] = -1
+        }
+
+        // Add memory usage
+        try {
+            val runtime = Runtime.getRuntime()
+            val usedMemory = (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024)
+            val maxMemory = runtime.maxMemory() / (1024 * 1024)
+            stats["memoryUsedMB"] = usedMemory
+            stats["memoryMaxMB"] = maxMemory
+        } catch (e: Exception) {
+            // Ignore memory errors
+        }
+
+        result.success(stats)
+    }
+
+    // CPU usage tracking
+    private var lastCpuTime = 0L
+    private var lastAppCpuTime = 0L
+
+    private fun getCpuUsage(): Int {
+        try {
+            // Use Debug.threadCpuTimeNanos for simpler CPU tracking
+            val currentCpuTime = android.os.Debug.threadCpuTimeNanos()
+            val currentRealTime = System.nanoTime()
+
+            if (lastCpuTime == 0L) {
+                lastCpuTime = currentRealTime
+                lastAppCpuTime = currentCpuTime
+                return 0
+            }
+
+            val realTimeDelta = currentRealTime - lastCpuTime
+            val cpuTimeDelta = currentCpuTime - lastAppCpuTime
+
+            lastCpuTime = currentRealTime
+            lastAppCpuTime = currentCpuTime
+
+            if (realTimeDelta <= 0) return 0
+
+            // CPU percentage for this thread
+            val cpuPercent = ((cpuTimeDelta * 100) / realTimeDelta).toInt()
+            return cpuPercent.coerceIn(0, 100)
+        } catch (e: Exception) {
+            android.util.Log.w("MetaWearablesPlugin", "CPU usage error: ${e.message}")
+            return -1
         }
     }
 

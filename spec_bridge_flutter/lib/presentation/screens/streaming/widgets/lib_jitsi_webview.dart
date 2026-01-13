@@ -3,11 +3,11 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import '../../../../services/lib_jitsi_service.dart';
 
-/// Hidden WebView that hosts lib-jitsi-meet for direct frame injection
+/// WebView that hosts lib-jitsi-meet and displays the video preview
 ///
 /// This WebView loads a local HTML page that uses lib-jitsi-meet.js
-/// to connect to Jitsi servers. The WebView is hidden (1x1 pixel)
-/// but necessary for WebRTC to function.
+/// to connect to Jitsi servers. Video frames are rendered to a canvas
+/// via WebGL, which is then captured for WebRTC transmission.
 class LibJitsiWebView extends StatefulWidget {
   final LibJitsiService service;
 
@@ -26,13 +26,9 @@ class _LibJitsiWebViewState extends State<LibJitsiWebView> {
 
   @override
   Widget build(BuildContext context) {
-    // Hidden WebView - 1x1 pixel, positioned off-screen
-    return SizedBox(
-      width: 1,
-      height: 1,
-      child: Stack(
-        children: [
-          InAppWebView(
+    // WebView fills parent and shows video preview
+    return ClipRect(
+      child: InAppWebView(
             initialFile: 'assets/jitsi_bridge.html',
             initialSettings: widget.service.webViewSettings,
             onWebViewCreated: (controller) {
@@ -66,8 +62,6 @@ class _LibJitsiWebViewState extends State<LibJitsiWebView> {
               debugPrint('LibJitsiWebView console: ${message.message}');
             },
           ),
-        ],
-      ),
     );
   }
 }

@@ -1,5 +1,4 @@
 import 'dart:io' show Platform;
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -12,11 +11,12 @@ import '../../../data/models/stream_status.dart';
 import '../../../services/background_streaming_service.dart';
 import '../../../services/glasses_service.dart';
 import '../../../services/lib_jitsi_service.dart';
+import '../../../services/platform_channels/meta_dat_channel.dart';
+import '../../../services/settings_service.dart';
 import '../../../services/stream_service.dart';
 import 'widgets/control_buttons.dart';
 import 'widgets/lib_jitsi_webview.dart';
 import 'widgets/stats_overlay.dart';
-import 'widgets/video_preview.dart';
 
 /// Main streaming screen showing video preview and controls
 class StreamingScreen extends StatefulWidget {
@@ -35,7 +35,6 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
   bool _isStarting = true;
   String? _errorMessage;
   Orientation? _lastOrientation;
-  bool _showStats = false;
   bool _backgroundMode = false;
 
   @override
@@ -221,58 +220,57 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
       },
       child: Scaffold(
         backgroundColor: Colors.black,
-        body: Stack(
-          children: [
-            // Hidden WebView for lib-jitsi-meet
-            Positioned(
-              left: -10,
-              top: -10,
-              child: LibJitsiWebView(
-                service: context.read<LibJitsiService>(),
+        body: SafeArea(
+          child: Column(
+            children: [
+              // Top bar with status
+              Consumer<StreamService>(
+                builder: (context, streamService, _) {
+                  return _buildTopBar(streamService.currentState);
+                },
               ),
-            ),
 
-            // Stats overlay
-            StatsOverlay(
-              service: context.read<LibJitsiService>(),
-              isVisible: _showStats,
-            ),
+              // Video preview - WebView with overlay states
+              Expanded(
+                child: Stack(
+                  children: [
+                    // WebView showing the actual video being sent
+                    LibJitsiWebView(
+                      service: context.read<LibJitsiService>(),
+                    ),
 
-            // Main UI
-            SafeArea(
-              child: Column(
-                children: [
-                  // Top bar with status
-                  Consumer<StreamService>(
-                    builder: (context, streamService, _) {
-                      return _buildTopBar(streamService.currentState);
-                    },
-                  ),
-
-                  // Video preview
-                  Expanded(
-                    child: Consumer<GlassesService>(
+                    // Overlay for loading/error/special states
+                    Consumer<GlassesService>(
                       builder: (context, glassesService, _) {
-                        return _buildVideoArea(glassesService.videoSource);
+                        return _buildVideoOverlay(glassesService.videoSource);
                       },
                     ),
-                  ),
 
-                  // Controls
-                  Consumer2<LibJitsiService, GlassesService>(
-                    builder: (context, libJitsiService, glassesService, _) {
-                      final state = libJitsiService.currentState;
-                      return _buildControls(
-                        isAudioMuted: state.isAudioMuted,
-                        isVideoMuted: state.isVideoMuted,
-                        videoSource: glassesService.videoSource,
-                      );
-                    },
-                  ),
-                ],
+                    // Stats overlay
+                    Consumer<SettingsService>(
+                      builder: (context, settingsService, _) => StatsOverlay(
+                        service: context.read<LibJitsiService>(),
+                        nativeChannel: context.read<MetaDATChannel>(),
+                        isVisible: settingsService.settings.showPipelineStats,
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ],
+
+              // Controls
+              Consumer2<LibJitsiService, GlassesService>(
+                builder: (context, libJitsiService, glassesService, _) {
+                  final state = libJitsiService.currentState;
+                  return _buildControls(
+                    isAudioMuted: state.isAudioMuted,
+                    isVideoMuted: state.isVideoMuted,
+                    videoSource: glassesService.videoSource,
+                  );
+                },
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -345,13 +343,18 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
           ),
 
           // Stats toggle button
-          IconButton(
-            icon: Icon(
-              _showStats ? Icons.analytics : Icons.analytics_outlined,
-              color: _showStats ? Colors.green : Colors.white,
-            ),
-            onPressed: () => setState(() => _showStats = !_showStats),
-            tooltip: 'Toggle Stats',
+          Consumer<SettingsService>(
+            builder: (context, settingsService, _) {
+              final showStats = settingsService.settings.showPipelineStats;
+              return IconButton(
+                icon: Icon(
+                  showStats ? Icons.analytics : Icons.analytics_outlined,
+                  color: showStats ? Colors.green : Colors.white,
+                ),
+                onPressed: () => settingsService.setShowPipelineStats(!showStats),
+                tooltip: 'Toggle Stats',
+              );
+            },
           ),
 
           // Frame counter
@@ -417,50 +420,58 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
     }
   }
 
-  Widget _buildVideoArea(VideoSource videoSource) {
+  Widget _buildVideoOverlay(VideoSource videoSource) {
+    // Loading state - show spinner over video
     if (_isStarting) {
-      return const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            CircularProgressIndicator(color: Colors.white),
-            SizedBox(height: 16),
-            Text(
-              'Connecting to meeting...',
-              style: TextStyle(color: Colors.white),
-            ),
-          ],
+      return Container(
+        color: Colors.black87,
+        child: const Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircularProgressIndicator(color: Colors.white),
+              SizedBox(height: 16),
+              Text(
+                'Connecting to meeting...',
+                style: TextStyle(color: Colors.white),
+              ),
+            ],
+          ),
         ),
       );
     }
 
+    // Error state - show error message
     if (_errorMessage != null) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(32),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.error_outline, color: Colors.red, size: 64),
-              const SizedBox(height: 16),
-              Text(
-                'Failed to start streaming',
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      color: Colors.white,
-                    ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                _errorMessage!,
-                style: const TextStyle(color: Colors.grey),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 24),
-              ElevatedButton(
-                onPressed: () => context.go('/setup'),
-                child: const Text('Back to Setup'),
-              ),
-            ],
+      return Container(
+        color: Colors.black87,
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.error_outline, color: Colors.red, size: 64),
+                const SizedBox(height: 16),
+                Text(
+                  'Failed to start streaming',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        color: Colors.white,
+                      ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _errorMessage!,
+                  style: const TextStyle(color: Colors.grey),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 24),
+                ElevatedButton(
+                  onPressed: () => context.go('/setup'),
+                  child: const Text('Back to Setup'),
+                ),
+              ],
+            ),
           ),
         ),
       );
@@ -468,46 +479,26 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
 
     // Screen share mode - show status message
     if (videoSource == VideoSource.screenShare) {
-      return const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.screen_share, color: Colors.grey, size: 64),
-            SizedBox(height: 16),
-            Text(
-              'Screen share not yet implemented for lib-jitsi-meet',
-              style: TextStyle(color: Colors.grey, fontSize: 16),
-            ),
-          ],
+      return Container(
+        color: Colors.black87,
+        child: const Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.screen_share, color: Colors.grey, size: 64),
+              SizedBox(height: 16),
+              Text(
+                'Screen share not yet implemented for lib-jitsi-meet',
+                style: TextStyle(color: Colors.grey, fontSize: 16),
+              ),
+            ],
+          ),
         ),
       );
     }
 
-    // Camera/glasses mode - show video preview
-    final streamService = context.read<StreamService>();
-    final previewStream = streamService.previewFrameStream;
-
-    return StreamBuilder<Uint8List>(
-      stream: previewStream,
-      builder: (context, snapshot) {
-        if (snapshot.hasData) {
-          return VideoPreview(frameData: snapshot.data!);
-        }
-        return const Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.videocam, color: Colors.grey, size: 64),
-              SizedBox(height: 16),
-              Text(
-                'Waiting for video...',
-                style: TextStyle(color: Colors.grey),
-              ),
-            ],
-          ),
-        );
-      },
-    );
+    // Normal streaming - WebView shows the video, no overlay needed
+    return const SizedBox.shrink();
   }
 
   Widget _buildControls({
