@@ -28,9 +28,15 @@
         tools:replace="android:label">
 
         <!-- Meta Wearables SDK Configuration -->
+        <!-- Use @string/meta_app_id to ensure value is read as String, not Integer -->
+        <!-- Set to "0" for Developer Mode, or your App ID from Wearables Developer Center -->
         <meta-data
             android:name="com.meta.wearable.mwdat.APPLICATION_ID"
-            android:value="886814173816275" />
+            android:value="@string/meta_app_id" />
+        <!-- Client Token from Wearables Developer Center (required for production) -->
+        <meta-data
+            android:name="com.meta.wearable.mwdat.CLIENT_TOKEN"
+            android:value="@string/meta_client_token" />
         <meta-data
             android:name="com.meta.wearable.mwdat.ANALYTICS_OPT_OUT"
             android:value="true" />

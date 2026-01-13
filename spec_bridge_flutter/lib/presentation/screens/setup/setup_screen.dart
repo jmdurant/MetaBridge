@@ -85,6 +85,24 @@ class _SetupScreenState extends State<SetupScreen> {
     }
   }
 
+  Future<void> _disconnectGlasses() async {
+    try {
+      final glassesService = context.read<GlassesService>();
+      await glassesService.disconnect();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Glasses disconnected')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to disconnect: $e')),
+        );
+      }
+    }
+  }
+
   void _startStreaming() {
     if (_roomController.text.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -284,6 +302,14 @@ class _SetupScreenState extends State<SetupScreen> {
                     ],
                   ),
                 ),
+                // Disconnect button when connected
+                if (isConnected)
+                  IconButton(
+                    onPressed: _disconnectGlasses,
+                    icon: const Icon(Icons.link_off),
+                    tooltip: 'Disconnect',
+                    color: Colors.red,
+                  ),
               ],
             ),
             if (!isConnected) ...[

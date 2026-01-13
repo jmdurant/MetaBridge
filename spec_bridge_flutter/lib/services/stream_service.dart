@@ -65,7 +65,8 @@ class StreamService extends ChangeNotifier {
       _frameCount = 0;
 
       final videoSource = _glassesService.videoSource;
-      debugPrint('StreamService: Starting lib-jitsi-meet mode, videoSource=$videoSource');
+      final isGlassesMode = videoSource.toString().contains('glasses');
+      debugPrint('StreamService: Starting lib-jitsi-meet mode, videoSource=$videoSource, isGlassesMode=$isGlassesMode');
 
       // 1. Route audio to glasses if available
       final audioRouted = await _bluetoothAudioService.autoRouteToGlasses();
@@ -73,23 +74,53 @@ class StreamService extends ChangeNotifier {
         debugPrint('StreamService: Audio routed to glasses');
       }
 
-      // 2. Start video capture (glasses or camera)
-      final captureStarted = await _glassesService.startStreaming();
-      if (!captureStarted) {
-        throw Exception('Failed to start video capture');
+      // For glasses mode: Start video capture FIRST to avoid conflict with WebView audio setup
+      // The Meta SDK error "Cannot process request from the current state" seems to occur
+      // when WebView audio setup runs concurrently with glasses stream session creation
+      if (isGlassesMode) {
+        debugPrint('StreamService: [Glasses] Starting video capture FIRST...');
+        final captureStarted = await _glassesService.startStreaming();
+        if (!captureStarted) {
+          throw Exception('Failed to start glasses video capture');
+        }
+        debugPrint('StreamService: [Glasses] Video capture started, waiting for stream to stabilize...');
+
+        // Give glasses stream time to fully establish before WebView touches audio
+        await Future.delayed(const Duration(seconds: 2));
+
+        debugPrint('StreamService: [Glasses] Now joining meeting...');
+        await _libJitsiService!.joinMeeting(config);
+        await Future.delayed(const Duration(milliseconds: 500));
+        debugPrint('StreamService: [Glasses] Meeting join initiated');
+      } else {
+        // For camera mode: Join meeting first (original flow works fine)
+        debugPrint('StreamService: [Camera] Joining meeting first...');
+        await _libJitsiService!.joinMeeting(config);
+        await Future.delayed(const Duration(milliseconds: 500));
+        debugPrint('StreamService: [Camera] Meeting join initiated, isInMeeting=${_libJitsiService!.isInMeeting}');
+
+        debugPrint('StreamService: [Camera] Starting video capture...');
+        final captureStarted = await _glassesService.startStreaming();
+        if (!captureStarted) {
+          throw Exception('Failed to start video capture');
+        }
+        debugPrint('StreamService: [Camera] Video capture started');
       }
 
-      // 3. Join meeting via lib-jitsi-meet
-      await _libJitsiService!.joinMeeting(config);
-
-      // 4. Send frames to lib-jitsi-meet WebView
+      // Set up frame forwarding to lib-jitsi-meet WebView
       _libJitsiFrameSubscription = _glassesService.previewFrameStream.listen((frameData) {
         _frameCount++;
+
+        if (_frameCount == 1) {
+          debugPrint('StreamService: First frame received (${frameData.length} bytes)');
+        }
+
         // Send every frame to lib-jitsi-meet (it handles throttling)
         _libJitsiService!.sendFrame(frameData);
 
         // Update UI every 30 frames
         if (_frameCount % 30 == 0) {
+          debugPrint('StreamService: Sent $_frameCount frames');
           _updateState(_currentState.copyWith(framesSent: _frameCount));
         }
       });

@@ -1,10 +1,7 @@
 package com.specbridge.app
 
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.ImageFormat
-import android.graphics.Matrix
 import android.graphics.Rect
 import android.graphics.YuvImage
 import com.meta.wearable.dat.core.Wearables
@@ -25,7 +22,9 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
 
 /**
@@ -51,41 +50,62 @@ class StreamSessionManager(
     var frameCount: Long = 0
         private set
 
-    // Match iOS: 0.8 quality (80 in Android terms)
-    private val jpegQuality = 80
-
-    // Match iOS: 0.5x scaling for bandwidth optimization
-    private val scaleFactor = 0.5f
-
     // MARK: - Streaming Control
 
     fun startStreaming(width: Int, height: Int, frameRate: Int): Boolean {
+        android.util.Log.d("StreamSessionManager", "startStreaming called: ${width}x${height} @ ${frameRate}fps")
+
         if (streamSession != null) {
+            android.util.Log.w("StreamSessionManager", "Already streaming, returning false")
             return false // Already streaming
         }
 
-        return try {
+        // Launch the streaming setup in a coroutine to allow waiting for device
+        scope.launch {
+            startStreamingAsync(width, height, frameRate)
+        }
+
+        return true // Return true immediately, actual status will be reported via statusFlow
+    }
+
+    private suspend fun startStreamingAsync(width: Int, height: Int, frameRate: Int) {
+        try {
             _statusFlow.value = "starting"
             frameCount = 0
 
-            // Determine video quality based on resolution
-            val quality = when {
-                width >= 1280 -> VideoQuality.HIGH      // 720×1280
-                width >= 504 -> VideoQuality.MEDIUM     // 504×896
-                else -> VideoQuality.LOW                // 360×640
+            // Wait for device to be active before starting stream (matching official sample)
+            android.util.Log.d("StreamSessionManager", "Waiting for active device...")
+            val activeDevice = withTimeoutOrNull(10000L) {
+                wearablesManager.deviceSelector.activeDevice(Wearables.devices).first { it != null }
             }
 
-            // Create stream session using the extension function
+            if (activeDevice == null) {
+                android.util.Log.e("StreamSessionManager", "No active device found within timeout")
+                _statusFlow.value = "error"
+                return
+            }
+            android.util.Log.d("StreamSessionManager", "Active device found: $activeDevice")
+
+            // Use MEDIUM quality and 24fps like the official sample for reliability
+            // The official CameraAccess sample uses: VideoQuality.MEDIUM, 24
+            val quality = VideoQuality.MEDIUM
+            val fps = 24
+            android.util.Log.d("StreamSessionManager", "Using video quality: $quality @ ${fps}fps (matching official sample)")
+
+            // Create stream session exactly like the official sample
+            android.util.Log.d("StreamSessionManager", "Creating stream session...")
             val session = Wearables.startStreamSession(
                 context,
                 wearablesManager.deviceSelector,
-                StreamConfiguration(videoQuality = quality, frameRate)
+                StreamConfiguration(videoQuality = quality, fps)
             )
             streamSession = session
+            android.util.Log.d("StreamSessionManager", "Stream session created successfully")
 
             // Observe session state
             stateJob = scope.launch {
                 session.state.collect { state ->
+                    android.util.Log.d("StreamSessionManager", "Stream state changed: $state")
                     _statusFlow.value = when (state) {
                         StreamSessionState.STARTING -> "starting"
                         StreamSessionState.STREAMING -> "streaming"
@@ -97,16 +117,17 @@ class StreamSessionManager(
             }
 
             // Collect video frames
+            android.util.Log.d("StreamSessionManager", "Starting to collect video frames...")
             videoJob = scope.launch {
                 session.videoStream.collect { frame ->
                     processFrame(frame)
                 }
             }
 
-            true
+            android.util.Log.d("StreamSessionManager", "Stream setup complete, waiting for frames...")
         } catch (e: Exception) {
+            android.util.Log.e("StreamSessionManager", "startStreamingAsync failed", e)
             _statusFlow.value = "error"
-            false
         }
     }
 
@@ -122,50 +143,50 @@ class StreamSessionManager(
 
     // MARK: - Frame Processing
 
+    // Reusable buffer to avoid allocations
+    private var frameBuffer: ByteArray? = null
+    private var outputStream = ByteArrayOutputStream(50000)
+
     private fun processFrame(videoFrame: VideoFrame) {
         frameCount++
+
+        if (frameCount == 1L) {
+            android.util.Log.d("StreamSessionManager", "First frame received from glasses: ${videoFrame.width}x${videoFrame.height}")
+        }
+        if (frameCount % 100 == 0L) {
+            android.util.Log.d("StreamSessionManager", "Processed $frameCount frames from glasses")
+        }
 
         try {
             // VideoFrame contains raw I420 video data in a ByteBuffer
             val buffer = videoFrame.buffer
             val dataSize = buffer.remaining()
-            val byteArray = ByteArray(dataSize)
+
+            // Reuse buffer if possible
+            if (frameBuffer == null || frameBuffer!!.size < dataSize) {
+                frameBuffer = ByteArray(dataSize)
+            }
 
             // Save current position
             val originalPosition = buffer.position()
-            buffer.get(byteArray)
+            buffer.get(frameBuffer!!, 0, dataSize)
             // Restore position
             buffer.position(originalPosition)
 
             // Convert I420 to NV21 format which is supported by Android's YuvImage
-            val nv21 = convertI420toNV21(byteArray, videoFrame.width, videoFrame.height)
+            val nv21 = convertI420toNV21(frameBuffer!!, videoFrame.width, videoFrame.height)
             val yuvImage = YuvImage(nv21, ImageFormat.NV21, videoFrame.width, videoFrame.height, null)
 
-            // First pass: convert YUV to JPEG at full resolution
-            val fullResStream = ByteArrayOutputStream()
-            yuvImage.compressToJpeg(Rect(0, 0, videoFrame.width, videoFrame.height), 100, fullResStream)
-            val fullResJpeg = fullResStream.toByteArray()
+            // Single pass: compress directly to JPEG (matching official sample approach)
+            // Using 50% quality like official sample for speed
+            outputStream.reset()
+            yuvImage.compressToJpeg(Rect(0, 0, videoFrame.width, videoFrame.height), 50, outputStream)
 
-            // Decode to bitmap for scaling
-            val bitmap = BitmapFactory.decodeByteArray(fullResJpeg, 0, fullResJpeg.size)
-
-            // Scale to 0.5x (matching iOS)
-            val scaledWidth = (bitmap.width * scaleFactor).toInt()
-            val scaledHeight = (bitmap.height * scaleFactor).toInt()
-            val scaledBitmap = Bitmap.createScaledBitmap(bitmap, scaledWidth, scaledHeight, true)
-
-            // Compress scaled bitmap to JPEG
-            ByteArrayOutputStream().use { stream ->
-                scaledBitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality, stream)
-                val jpegData = stream.toByteArray()
-                _frameFlow.tryEmit(jpegData)
-            }
-
-            // Clean up bitmaps
-            bitmap.recycle()
-            scaledBitmap.recycle()
+            _frameFlow.tryEmit(outputStream.toByteArray())
         } catch (e: Exception) {
-            // Ignore frame processing errors
+            if (frameCount < 10) {
+                android.util.Log.e("StreamSessionManager", "Frame processing error: ${e.message}")
+            }
         }
     }
 

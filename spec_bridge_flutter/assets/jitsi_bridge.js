@@ -150,17 +150,18 @@ async function onConnectionEstablished(room, displayName) {
     }
 
     // Create video track from canvas
+    // Using 'desktop' type prevents Jitsi from trying to re-acquire a real camera on unmute
     try {
-      canvasStream = canvas.captureStream(24); // 24 fps
+      canvasStream = canvas.captureStream(30); // 30 fps to match glasses
       const videoTrackInfo = [{
         stream: canvasStream,
         sourceType: 'canvas',
         mediaType: 'video',
-        videoType: 'camera'
+        videoType: 'desktop'  // 'desktop' type = screen share, won't trigger camera acquisition
       }];
       const videoTracks = JitsiMeetJS.createLocalTracksFromMediaStreams(videoTrackInfo);
       localVideoTrack = videoTracks[0];
-      updateStatus('Video track created from canvas');
+      updateStatus('Video track created from canvas (as desktop share)');
     } catch (videoError) {
       console.error('[JitsiBridge] Video track creation failed:', videoError);
       notifyFlutter('error', { message: 'Video track failed: ' + videoError.message });
@@ -323,13 +324,19 @@ function toggleAudio() {
 }
 
 // Video controls
+// Note: For canvas-based video (desktop type), we just mute/unmute the existing track
+// We never try to re-acquire a camera device
 function setVideoMuted(muted) {
   isVideoMuted = muted;
   if (localVideoTrack) {
-    if (muted) {
-      localVideoTrack.mute();
-    } else {
-      localVideoTrack.unmute();
+    try {
+      if (muted) {
+        localVideoTrack.mute();
+      } else {
+        localVideoTrack.unmute();
+      }
+    } catch (e) {
+      console.warn('[JitsiBridge] Video mute/unmute error (ignored):', e);
     }
     notifyFlutter('videoMutedChanged', { muted: muted });
   }

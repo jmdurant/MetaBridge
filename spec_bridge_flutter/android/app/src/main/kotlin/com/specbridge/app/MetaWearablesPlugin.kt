@@ -56,6 +56,7 @@ class MetaWearablesPlugin(
                 startStreaming(width, height, frameRate, videoSource, result)
             }
             "stopStreaming" -> stopStreaming(result)
+            "disconnect" -> disconnect(result)
             else -> result.notImplemented()
         }
     }
@@ -145,14 +146,27 @@ class MetaWearablesPlugin(
     private fun requestCameraPermission(result: MethodChannel.Result) {
         scope.launch {
             try {
-                val manager = wearablesManager
-                if (manager == null) {
+                if (wearablesManager == null) {
                     result.error("NOT_CONFIGURED", "Call configure first", null)
                     return@launch
                 }
 
-                val status = manager.requestCameraPermission()
-                result.success(status)
+                // Use MainActivity's permission launcher to request via Meta AI app
+                val mainActivity = activity as? MainActivity
+                if (mainActivity == null) {
+                    result.error("ACTIVITY_ERROR", "MainActivity not available", null)
+                    return@launch
+                }
+
+                val permissionStatus = mainActivity.requestWearablesPermission(
+                    com.meta.wearable.dat.core.types.Permission.CAMERA
+                )
+
+                val statusString = when (permissionStatus) {
+                    com.meta.wearable.dat.core.types.PermissionStatus.Granted -> "granted"
+                    com.meta.wearable.dat.core.types.PermissionStatus.Denied -> "denied"
+                }
+                result.success(statusString)
             } catch (e: Exception) {
                 result.error("PERMISSION_FAILED", e.message, null)
             }
@@ -286,6 +300,29 @@ class MetaWearablesPlugin(
                 "status" to "stopped"
             ))
             result.success(null)
+        }
+    }
+
+    private fun disconnect(result: MethodChannel.Result) {
+        scope.launch {
+            try {
+                // Stop any streaming first
+                streamManager?.stopStreaming()
+                streamManager = null
+                cameraManager?.stopCapture()
+                cameraManager = null
+
+                // Disconnect from glasses
+                wearablesManager?.disconnect()
+
+                sendEvent(mapOf(
+                    "type" to "connectionState",
+                    "state" to "disconnected"
+                ))
+                result.success(null)
+            } catch (e: Exception) {
+                result.error("DISCONNECT_FAILED", e.message, null)
+            }
         }
     }
 

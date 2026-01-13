@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SpecBridge</string>
+
+    <!-- Meta Wearables SDK Configuration -->
+    <!-- Use "0" for Developer Mode, or your App ID from Wearables Developer Center -->
+    <string name="meta_app_id">0</string>
+    <!-- Client Token from Wearables Developer Center (empty for Developer Mode) -->
+    <string name="meta_client_token"></string>
+</resources>

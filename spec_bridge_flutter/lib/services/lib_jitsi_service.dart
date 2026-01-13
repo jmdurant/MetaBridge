@@ -267,13 +267,27 @@ class LibJitsiService extends ChangeNotifier {
     _pendingConfig = null;
   }
 
+  // Frame counter for debug logging
+  int _frameSentCount = 0;
+
   /// Send a video frame to the WebView canvas
   ///
   /// Frames are JPEG-encoded and sent as base64.
   /// Throttled to ~30fps max to avoid overwhelming the JS bridge.
   void sendFrame(Uint8List jpegData) {
     // Don't send frames when paused - they'll just queue up
-    if (_controller == null || !_currentState.isInMeeting || _isPaused) return;
+    if (_controller == null) {
+      if (_frameSentCount == 0) debugPrint('LibJitsiService.sendFrame: controller is null');
+      return;
+    }
+    if (!_currentState.isInMeeting) {
+      if (_frameSentCount == 0) debugPrint('LibJitsiService.sendFrame: not in meeting yet');
+      return;
+    }
+    if (_isPaused) {
+      if (_frameSentCount == 0) debugPrint('LibJitsiService.sendFrame: WebView is paused');
+      return;
+    }
 
     // Throttle frame rate
     final now = DateTime.now();
@@ -281,6 +295,11 @@ class LibJitsiService extends ChangeNotifier {
       return;
     }
     _lastFrameSent = now;
+
+    _frameSentCount++;
+    if (_frameSentCount == 1) {
+      debugPrint('LibJitsiService: Sending first frame to WebView (${jpegData.length} bytes)');
+    }
 
     final base64Data = base64Encode(jpegData);
     _controller?.evaluateJavascript(

@@ -60,10 +60,17 @@
 	</array>
 
 	<!-- Meta Wearables DAT SDK Configuration -->
-	<key>MetaAppID</key>
-	<string>886814173816275</string>
-	<key>MWDATCallbackURLScheme</key>
-	<string>specbridge</string>
+	<key>MWDAT</key>
+	<dict>
+		<key>AppLinkURLScheme</key>
+		<string>specbridge://</string>
+		<key>MetaAppID</key>
+		<string>886814173816275</string>
+		<key>ClientToken</key>
+		<string></string>
+		<key>TeamID</key>
+		<string>$(DEVELOPMENT_TEAM)</string>
+	</dict>
 
 	<!-- Permissions -->
 	<key>NSCameraUsageDescription</key>

@@ -69,6 +69,9 @@ abstract class MetaDATChannel {
   /// Stop video streaming
   Future<void> stopStreaming();
 
+  /// Disconnect from glasses
+  Future<void> disconnect();
+
   /// Event stream for connection/status updates
   Stream<MetaDATEvent> get eventStream;
 
@@ -244,6 +247,15 @@ class MetaDATChannelImpl implements MetaDATChannel {
       await _methodChannel.invokeMethod<void>('stopStreaming');
     } on PlatformException {
       // Ignore errors on stop
+    }
+  }
+
+  @override
+  Future<void> disconnect() async {
+    try {
+      await _methodChannel.invokeMethod<void>('disconnect');
+    } on PlatformException {
+      // Ignore errors on disconnect
     }
   }
 
