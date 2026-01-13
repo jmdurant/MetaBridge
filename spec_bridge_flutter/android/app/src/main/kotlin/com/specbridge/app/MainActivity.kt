@@ -9,6 +9,7 @@ class MainActivity : FlutterActivity() {
     private lateinit var metaWearablesPlugin: MetaWearablesPlugin
     private lateinit var bluetoothAudioPlugin: BluetoothAudioPlugin
     private lateinit var floatingPreviewPlugin: FloatingPreviewPlugin
+    private lateinit var streamingServicePlugin: StreamingServicePlugin
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -21,6 +22,9 @@ class MainActivity : FlutterActivity() {
 
         // Initialize Floating Preview Plugin
         floatingPreviewPlugin = FloatingPreviewPlugin(this, flutterEngine.dartExecutor.binaryMessenger)
+
+        // Initialize Streaming Service Plugin (for background mode)
+        streamingServicePlugin = StreamingServicePlugin(this, flutterEngine.dartExecutor.binaryMessenger)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -47,6 +51,7 @@ class MainActivity : FlutterActivity() {
         metaWearablesPlugin.dispose()
         bluetoothAudioPlugin.dispose()
         floatingPreviewPlugin.dispose()
+        streamingServicePlugin.dispose()
         super.onDestroy()
     }
 }

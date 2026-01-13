@@ -9,6 +9,7 @@ import 'services/deep_link_service.dart';
 import 'services/glasses_service.dart';
 import 'services/jitsi_service.dart';
 import 'services/jitsi_webview_service.dart';
+import 'services/lib_jitsi_service.dart';
 import 'services/permission_service.dart';
 import 'services/platform_channels/bluetooth_audio_channel.dart';
 import 'services/platform_channels/meta_dat_channel.dart';
@@ -62,9 +63,14 @@ void main() async {
         // Jitsi SDK service
         ChangeNotifierProvider<JitsiService>(create: (_) => JitsiService()),
 
-        // Jitsi WebView service (fallback)
+        // Jitsi WebView service (legacy fallback)
         ChangeNotifierProvider<JitsiWebViewService>(
           create: (_) => JitsiWebViewService(),
+        ),
+
+        // lib-jitsi-meet service (direct frame injection mode)
+        ChangeNotifierProvider<LibJitsiService>(
+          create: (_) => LibJitsiService(),
         ),
 
         // Stream service (depends on glasses, jitsi, and bluetooth audio)

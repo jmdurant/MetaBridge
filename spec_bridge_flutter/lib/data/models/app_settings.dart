@@ -1,8 +1,8 @@
 import 'package:equatable/equatable.dart';
 
 enum JitsiMode {
-  sdk,      // Native SDK with socket injection (higher quality)
-  webview,  // WebView fallback with screen capture
+  sdk,          // Native SDK with overlay + screen capture
+  libJitsiMeet, // lib-jitsi-meet in WebView with direct frame injection
 }
 
 class AppSettings extends Equatable {

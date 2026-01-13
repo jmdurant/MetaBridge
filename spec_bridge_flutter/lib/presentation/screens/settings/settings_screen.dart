@@ -21,10 +21,10 @@ class SettingsScreen extends StatelessWidget {
             children: [
               const _SectionHeader('Jitsi Connection Mode'),
               RadioListTile<JitsiMode>(
-                title: const Text('SDK (Recommended)'),
+                title: const Text('SDK Mode'),
                 subtitle: const Text(
-                  'Native integration with direct frame injection. '
-                  'Higher quality, auto-starts screen share.',
+                  'Native Jitsi SDK with overlay + screen capture. '
+                  'Shows fullscreen overlay, auto-starts screen share.',
                 ),
                 value: JitsiMode.sdk,
                 groupValue: settings.jitsiMode,
@@ -35,12 +35,12 @@ class SettingsScreen extends StatelessWidget {
                 },
               ),
               RadioListTile<JitsiMode>(
-                title: const Text('WebView (Fallback)'),
+                title: const Text('lib-jitsi-meet (Experimental)'),
                 subtitle: const Text(
-                  'Opens Jitsi in browser view. '
-                  'Uses screen capture - lower quality but fewer dependencies.',
+                  'WebView with direct frame injection to WebRTC. '
+                  'No overlay needed - frames sent directly to canvas.',
                 ),
-                value: JitsiMode.webview,
+                value: JitsiMode.libJitsiMeet,
                 groupValue: settings.jitsiMode,
                 onChanged: (mode) {
                   if (mode != null) {
@@ -81,7 +81,7 @@ class SettingsScreen extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 32),
-              if (settings.jitsiMode == JitsiMode.webview)
+              if (settings.jitsiMode == JitsiMode.libJitsiMeet)
                 const Padding(
                   padding: EdgeInsets.all(16),
                   child: Card(
@@ -90,12 +90,13 @@ class SettingsScreen extends StatelessWidget {
                       padding: EdgeInsets.all(12),
                       child: Row(
                         children: [
-                          Icon(Icons.info_outline),
+                          Icon(Icons.science_outlined),
                           SizedBox(width: 12),
                           Expanded(
                             child: Text(
-                              'WebView mode requires manual screen share. '
-                              'Show glasses preview, then tap Share Screen in Jitsi.',
+                              'Experimental: Uses lib-jitsi-meet in a hidden WebView. '
+                              'Frames are drawn to canvas and sent via WebRTC. '
+                              'No screen sharing needed.',
                               style: TextStyle(fontSize: 13),
                             ),
                           ),

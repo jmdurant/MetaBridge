@@ -16,7 +16,10 @@ class SettingsService extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
 
     final modeString = prefs.getString(_keyJitsiMode);
-    final mode = modeString == 'webview' ? JitsiMode.webview : JitsiMode.sdk;
+    // Support both old 'webview' and new 'libJitsiMeet' values for migration
+    final mode = (modeString == 'webview' || modeString == 'libJitsiMeet')
+        ? JitsiMode.libJitsiMeet
+        : JitsiMode.sdk;
 
     _settings = AppSettings(
       jitsiMode: mode,
@@ -30,7 +33,8 @@ class SettingsService extends ChangeNotifier {
 
   Future<void> setJitsiMode(JitsiMode mode) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_keyJitsiMode, mode == JitsiMode.webview ? 'webview' : 'sdk');
+    await prefs.setString(
+        _keyJitsiMode, mode == JitsiMode.libJitsiMeet ? 'libJitsiMeet' : 'sdk');
     _settings = _settings.copyWith(jitsiMode: mode);
     notifyListeners();
   }

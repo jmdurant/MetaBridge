@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import '../data/models/app_settings.dart';
 import '../data/models/glasses_state.dart';
 import '../data/models/meeting_config.dart';
 import '../data/models/stream_status.dart';
@@ -10,18 +11,23 @@ import 'bluetooth_audio_service.dart';
 import 'floating_preview_service.dart';
 import 'glasses_service.dart';
 import 'jitsi_service.dart';
+import 'lib_jitsi_service.dart';
 
 /// Service that orchestrates glasses video streaming to Jitsi meetings
 class StreamService extends ChangeNotifier {
   final GlassesService _glassesService;
   final JitsiService _jitsiService;
   final BluetoothAudioService _bluetoothAudioService;
+  LibJitsiService? _libJitsiService;
+  JitsiMode _jitsiMode = JitsiMode.sdk;
 
   StreamState _currentState = const StreamState();
 
   int _frameCount = 0;
   StreamSubscription? _glassesEventSubscription;
+  StreamSubscription? _libJitsiFrameSubscription;
   VoidCallback? _jitsiListener;
+  VoidCallback? _libJitsiListener;
   bool _pendingScreenShare = false; // Track if we need to auto-start screen share
   bool _useOverlayMode = false; // Track if using overlay (glasses/camera) vs native screen share
 
@@ -31,6 +37,28 @@ class StreamService extends ChangeNotifier {
     this._bluetoothAudioService,
   ) {
     _listenToServices();
+  }
+
+  /// Set the lib-jitsi-meet service (called when available)
+  void setLibJitsiService(LibJitsiService service) {
+    _libJitsiService = service;
+    _setupLibJitsiListener();
+  }
+
+  /// Set the Jitsi mode to use
+  void setJitsiMode(JitsiMode mode) {
+    _jitsiMode = mode;
+    debugPrint('StreamService: Jitsi mode set to $mode');
+  }
+
+  void _setupLibJitsiListener() {
+    _libJitsiListener = () {
+      final state = _libJitsiService!.currentState;
+      _updateState(_currentState.copyWith(
+        isInMeeting: state.isInMeeting,
+      ));
+    };
+    _libJitsiService!.addListener(_libJitsiListener!);
   }
 
   /// Current stream state
@@ -77,6 +105,74 @@ class StreamService extends ChangeNotifier {
 
   /// Start streaming video to a Jitsi meeting
   Future<void> startStreaming(MeetingConfig config) async {
+    // Use lib-jitsi-meet mode if configured
+    if (_jitsiMode == JitsiMode.libJitsiMeet) {
+      await _startStreamingLibJitsi(config);
+      return;
+    }
+
+    // SDK mode (with overlay + screen capture)
+    await _startStreamingSdk(config);
+  }
+
+  /// Start streaming using lib-jitsi-meet (direct frame injection)
+  Future<void> _startStreamingLibJitsi(MeetingConfig config) async {
+    try {
+      if (_libJitsiService == null) {
+        throw Exception('LibJitsiService not available');
+      }
+
+      _updateState(_currentState.copyWith(status: StreamStatus.starting));
+      _frameCount = 0;
+
+      final videoSource = _glassesService.videoSource;
+      debugPrint('StreamService: Starting lib-jitsi-meet mode, videoSource=$videoSource');
+
+      // 1. Route audio to glasses if available
+      final audioRouted = await _bluetoothAudioService.autoRouteToGlasses();
+      if (audioRouted) {
+        debugPrint('StreamService: Audio routed to glasses');
+      }
+
+      // 2. Start video capture (glasses or camera)
+      final captureStarted = await _glassesService.startStreaming();
+      if (!captureStarted) {
+        throw Exception('Failed to start video capture');
+      }
+
+      // 3. Join meeting via lib-jitsi-meet
+      await _libJitsiService!.joinMeeting(config);
+
+      // 4. Send frames to lib-jitsi-meet WebView
+      _libJitsiFrameSubscription = _glassesService.previewFrameStream.listen((frameData) {
+        _frameCount++;
+        // Send every frame to lib-jitsi-meet (it handles throttling)
+        _libJitsiService!.sendFrame(frameData);
+
+        // Update UI every 30 frames
+        if (_frameCount % 30 == 0) {
+          _updateState(_currentState.copyWith(framesSent: _frameCount));
+        }
+      });
+
+      _updateState(_currentState.copyWith(
+        status: StreamStatus.streaming,
+        isInMeeting: true,
+        isGlassesAudioActive: audioRouted,
+      ));
+
+      debugPrint('StreamService: lib-jitsi-meet streaming started');
+    } catch (e) {
+      _updateState(_currentState.copyWith(
+        status: StreamStatus.error,
+        errorMessage: e.toString(),
+      ));
+      rethrow;
+    }
+  }
+
+  /// Start streaming using SDK mode (overlay + screen capture)
+  Future<void> _startStreamingSdk(MeetingConfig config) async {
     try {
       _updateState(_currentState.copyWith(status: StreamStatus.starting));
       _frameCount = 0;
@@ -157,21 +253,27 @@ class StreamService extends ChangeNotifier {
     _useOverlayMode = false;
 
     try {
-      // Cancel frame subscription
+      // Cancel frame subscriptions
       await _glassesEventSubscription?.cancel();
       _glassesEventSubscription = null;
+      await _libJitsiFrameSubscription?.cancel();
+      _libJitsiFrameSubscription = null;
 
       // Stop glasses streaming
       await _glassesService.stopStreaming();
 
-      // Stop floating overlay on Android
-      if (Platform.isAndroid) {
+      // Stop floating overlay on Android (SDK mode only)
+      if (_jitsiMode == JitsiMode.sdk && Platform.isAndroid) {
         await FloatingPreviewService.stopOverlay();
         debugPrint('StreamService: Floating overlay stopped');
       }
 
-      // Leave Jitsi meeting
-      await _jitsiService.leaveMeeting();
+      // Leave meeting (based on mode)
+      if (_jitsiMode == JitsiMode.libJitsiMeet && _libJitsiService != null) {
+        await _libJitsiService!.leaveMeeting();
+      } else {
+        await _jitsiService.leaveMeeting();
+      }
 
       // Clear audio routing
       await _bluetoothAudioService.clearAudioDevice();
@@ -192,16 +294,28 @@ class StreamService extends ChangeNotifier {
 
   /// Toggle audio in meeting
   Future<void> toggleAudio() async {
-    await _jitsiService.toggleAudio();
+    if (_jitsiMode == JitsiMode.libJitsiMeet && _libJitsiService != null) {
+      await _libJitsiService!.toggleAudio();
+    } else {
+      await _jitsiService.toggleAudio();
+    }
   }
 
   /// Toggle video in meeting
   Future<void> toggleVideo() async {
-    await _jitsiService.toggleVideo();
+    if (_jitsiMode == JitsiMode.libJitsiMeet && _libJitsiService != null) {
+      await _libJitsiService!.toggleVideo();
+    } else {
+      await _jitsiService.toggleVideo();
+    }
   }
 
-  /// Toggle screen share in meeting
+  /// Toggle screen share in meeting (SDK mode only)
   Future<void> toggleScreenShare() async {
+    if (_jitsiMode == JitsiMode.libJitsiMeet) {
+      debugPrint('StreamService: Screen share not applicable in lib-jitsi-meet mode');
+      return;
+    }
     debugPrint('StreamService: toggleScreenShare called');
     await _jitsiService.toggleScreenShare();
     debugPrint('StreamService: toggleScreenShare completed');
@@ -210,8 +324,12 @@ class StreamService extends ChangeNotifier {
   @override
   void dispose() {
     _glassesEventSubscription?.cancel();
+    _libJitsiFrameSubscription?.cancel();
     if (_jitsiListener != null) {
       _jitsiService.removeListener(_jitsiListener!);
+    }
+    if (_libJitsiListener != null && _libJitsiService != null) {
+      _libJitsiService!.removeListener(_libJitsiListener!);
     }
     super.dispose();
   }
