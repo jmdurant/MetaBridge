@@ -11,7 +11,7 @@ class AppSettings extends Equatable {
   final String? displayName;
 
   const AppSettings({
-    this.jitsiMode = JitsiMode.sdk,
+    this.jitsiMode = JitsiMode.libJitsiMeet,
     this.defaultServer = 'https://meet.jit.si',
     this.displayName,
   });
