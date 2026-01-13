@@ -20,7 +20,8 @@ class SettingsService extends ChangeNotifier {
 
     _settings = AppSettings(
       jitsiMode: mode,
-      defaultServer: prefs.getString(_keyDefaultServer) ?? 'https://meet.jit.si',
+      // Use community server - meet.jit.si requires login to be moderator
+      defaultServer: prefs.getString(_keyDefaultServer) ?? 'https://meet.ffmuc.net',
       displayName: prefs.getString(_keyDisplayName),
     );
 

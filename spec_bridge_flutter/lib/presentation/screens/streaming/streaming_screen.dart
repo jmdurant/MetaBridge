@@ -1,11 +1,14 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import '../../../data/models/glasses_state.dart';
 import '../../../data/models/meeting_config.dart';
 import '../../../data/models/stream_status.dart';
+import '../../../services/glasses_service.dart';
 import '../../../services/jitsi_service.dart';
 import '../../../services/stream_service.dart';
 import 'widgets/control_buttons.dart';
@@ -24,14 +27,64 @@ class StreamingScreen extends StatefulWidget {
   State<StreamingScreen> createState() => _StreamingScreenState();
 }
 
-class _StreamingScreenState extends State<StreamingScreen> {
+class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingObserver {
   bool _isStarting = true;
   String? _errorMessage;
+  Orientation? _lastOrientation;
 
   @override
   void initState() {
     super.initState();
-    _startStreaming();
+    WidgetsBinding.instance.addObserver(this);
+    // Schedule after frame to avoid setState during build
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _startStreaming();
+    });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Initial orientation check
+    _updateSystemUI();
+  }
+
+  @override
+  void didChangeMetrics() {
+    super.didChangeMetrics();
+    // Check orientation after metrics change
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _updateSystemUI();
+      }
+    });
+  }
+
+  void _updateSystemUI() {
+    final orientation = MediaQuery.of(context).orientation;
+    if (orientation != _lastOrientation) {
+      _lastOrientation = orientation;
+      if (orientation == Orientation.landscape) {
+        // Hide status bar and navigation bar in landscape for immersive experience
+        SystemChrome.setEnabledSystemUIMode(
+          SystemUiMode.immersiveSticky,
+          overlays: [],
+        );
+      } else {
+        // Show system UI in portrait
+        SystemChrome.setEnabledSystemUIMode(
+          SystemUiMode.edgeToEdge,
+          overlays: SystemUiOverlay.values,
+        );
+      }
+    }
+  }
+
+  void _restoreSystemUI() {
+    SystemChrome.setEnabledSystemUIMode(
+      SystemUiMode.edgeToEdge,
+      overlays: SystemUiOverlay.values,
+    );
   }
 
   Future<void> _startStreaming() async {
@@ -52,11 +105,19 @@ class _StreamingScreenState extends State<StreamingScreen> {
   }
 
   Future<void> _stopStreaming() async {
+    _restoreSystemUI();
     final streamService = context.read<StreamService>();
     await streamService.stopStreaming();
     if (mounted) {
       context.go('/setup');
     }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _restoreSystemUI();
+    super.dispose();
   }
 
   Future<bool> _onWillPop() async {
@@ -109,13 +170,23 @@ class _StreamingScreenState extends State<StreamingScreen> {
 
               // Video preview
               Expanded(
-                child: _buildVideoArea(),
+                child: Consumer2<GlassesService, JitsiService>(
+                  builder: (context, glassesService, jitsiService, _) {
+                    return _buildVideoArea(
+                      glassesService.videoSource,
+                      jitsiService.currentState.isScreenSharing,
+                    );
+                  },
+                ),
               ),
 
               // Controls
-              Consumer<JitsiService>(
-                builder: (context, jitsiService, _) {
-                  return _buildControls(jitsiService.currentState);
+              Consumer2<JitsiService, GlassesService>(
+                builder: (context, jitsiService, glassesService, _) {
+                  return _buildControls(
+                    jitsiService.currentState,
+                    glassesService.videoSource,
+                  );
                 },
               ),
             ],
@@ -223,7 +294,7 @@ class _StreamingScreenState extends State<StreamingScreen> {
     }
   }
 
-  Widget _buildVideoArea() {
+  Widget _buildVideoArea(VideoSource videoSource, bool isScreenSharing) {
     if (_isStarting) {
       return const Center(
         child: Column(
@@ -272,6 +343,38 @@ class _StreamingScreenState extends State<StreamingScreen> {
       );
     }
 
+    // Screen share mode - show status instead of preview
+    if (videoSource == VideoSource.screenShare) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              isScreenSharing ? Icons.screen_share : Icons.screen_share_outlined,
+              color: isScreenSharing ? Colors.green : Colors.grey,
+              size: 64,
+            ),
+            const SizedBox(height: 16),
+            Text(
+              isScreenSharing ? 'Screen sharing active' : 'Tap "Share Screen" to start',
+              style: TextStyle(
+                color: isScreenSharing ? Colors.green : Colors.grey,
+                fontSize: 16,
+              ),
+            ),
+            if (isScreenSharing) ...[
+              const SizedBox(height: 8),
+              const Text(
+                'Your screen is being shared in the meeting',
+                style: TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+            ],
+          ],
+        ),
+      );
+    }
+
+    // Camera/glasses mode - show video preview
     final streamService = context.read<StreamService>();
     final previewStream = streamService.previewFrameStream;
 
@@ -298,18 +401,27 @@ class _StreamingScreenState extends State<StreamingScreen> {
     );
   }
 
-  Widget _buildControls(JitsiMeetingState meetingState) {
+  Widget _buildControls(JitsiMeetingState meetingState, VideoSource videoSource) {
+    final isScreenShareMode = videoSource == VideoSource.screenShare;
+
     return Container(
       padding: const EdgeInsets.all(16),
       color: Colors.black54,
       child: ControlButtons(
         isAudioMuted: meetingState.isAudioMuted,
+        isVideoMuted: meetingState.isVideoMuted,
         isScreenSharing: meetingState.isScreenSharing,
+        isScreenShareMode: isScreenShareMode,
         onToggleAudio: () async {
           final streamService = context.read<StreamService>();
           await streamService.toggleAudio();
         },
+        onToggleVideo: () async {
+          final streamService = context.read<StreamService>();
+          await streamService.toggleVideo();
+        },
         onToggleScreenShare: () async {
+          debugPrint('StreamingScreen: Screen share button pressed');
           final streamService = context.read<StreamService>();
           await streamService.toggleScreenShare();
         },

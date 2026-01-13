@@ -3,16 +3,22 @@ import 'package:flutter/material.dart';
 /// Control buttons for the streaming screen
 class ControlButtons extends StatelessWidget {
   final bool isAudioMuted;
+  final bool isVideoMuted;
   final bool isScreenSharing;
+  final bool isScreenShareMode;  // True when video source is screen share
   final VoidCallback onToggleAudio;
+  final VoidCallback onToggleVideo;
   final VoidCallback onToggleScreenShare;
   final VoidCallback onEndCall;
 
   const ControlButtons({
     super.key,
     required this.isAudioMuted,
-    required this.isScreenSharing,
+    required this.isVideoMuted,
+    this.isScreenSharing = false,
+    this.isScreenShareMode = false,
     required this.onToggleAudio,
+    required this.onToggleVideo,
     required this.onToggleScreenShare,
     required this.onEndCall,
   });
@@ -30,14 +36,22 @@ class ControlButtons extends StatelessWidget {
           onPressed: onToggleAudio,
         ),
 
-        // Screen share button
-        _ControlButton(
-          icon: isScreenSharing ? Icons.stop_screen_share : Icons.screen_share,
-          label: isScreenSharing ? 'Stop Share' : 'Share Screen',
-          isActive: isScreenSharing,
-          activeColor: Colors.blue,
-          onPressed: onToggleScreenShare,
-        ),
+        // Middle button: Screen share OR Video toggle depending on mode
+        if (isScreenShareMode)
+          _ControlButton(
+            icon: isScreenSharing ? Icons.stop_screen_share : Icons.screen_share,
+            label: isScreenSharing ? 'Stop Share' : 'Share Screen',
+            isActive: isScreenSharing,
+            activeColor: Colors.green,
+            onPressed: onToggleScreenShare,
+          )
+        else
+          _ControlButton(
+            icon: isVideoMuted ? Icons.videocam_off : Icons.videocam,
+            label: isVideoMuted ? 'Start Video' : 'Stop Video',
+            isActive: !isVideoMuted,
+            onPressed: onToggleVideo,
+          ),
 
         // End call button
         _ControlButton(

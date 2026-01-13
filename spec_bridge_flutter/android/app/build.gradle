@@ -56,8 +56,12 @@ android {
             excludes += '/META-INF/{AL2.0,LGPL2.1}'
         }
         jniLibs {
+            // Don't compress native libs - helps SoLoader find them
+            useLegacyPackaging = false
+            keepDebugSymbols += '**/*.so'
             pickFirsts += 'lib/**/libc++_shared.so'
             pickFirsts += 'lib/**/libfbjni.so'
+            pickFirsts += 'lib/**/libairshield_light_mbed_jni.so'
         }
     }
 }

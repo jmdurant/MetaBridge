@@ -5,7 +5,7 @@ enum VideoSource {
   glasses,      // Meta Ray-Ban glasses
   backCamera,   // Phone back camera
   frontCamera,  // Phone front camera
-  screenRecord, // Screen recording
+  screenShare,  // Jitsi screen share
 }
 
 /// Connection state for Meta glasses
@@ -50,8 +50,8 @@ class GlassesState extends Equatable {
         return isConnected && hasPermission && isConfigured;
       case VideoSource.backCamera:
       case VideoSource.frontCamera:
-      case VideoSource.screenRecord:
-        // Phone cameras/screen don't need glasses connection
+      case VideoSource.screenShare:
+        // Phone cameras/screen share don't need glasses connection
         return true;
     }
   }

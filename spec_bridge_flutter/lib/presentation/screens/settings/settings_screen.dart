@@ -55,12 +55,12 @@ class SettingsScreen extends StatelessWidget {
                 child: TextFormField(
                   initialValue: settings.defaultServer,
                   decoration: const InputDecoration(
-                    hintText: 'https://meet.jit.si',
-                    helperText: 'Leave default for public Jitsi server',
+                    hintText: 'https://meet.ffmuc.net',
+                    helperText: 'Community server (meet.jit.si requires login)',
                   ),
                   onFieldSubmitted: (value) {
                     settingsService.setDefaultServer(
-                      value.isEmpty ? 'https://meet.jit.si' : value,
+                      value.isEmpty ? 'https://meet.ffmuc.net' : value,
                     );
                   },
                 ),

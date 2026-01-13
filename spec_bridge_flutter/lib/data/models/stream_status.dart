@@ -14,6 +14,7 @@ enum StreamStatus {
 class StreamState extends Equatable {
   final StreamStatus status;
   final bool isInMeeting;
+  final bool isScreenSharing;
   final int framesSent;
   final bool isGlassesAudioActive;
   final String? errorMessage;
@@ -21,6 +22,7 @@ class StreamState extends Equatable {
   const StreamState({
     this.status = StreamStatus.idle,
     this.isInMeeting = false,
+    this.isScreenSharing = false,
     this.framesSent = 0,
     this.isGlassesAudioActive = false,
     this.errorMessage,
@@ -32,6 +34,7 @@ class StreamState extends Equatable {
   StreamState copyWith({
     StreamStatus? status,
     bool? isInMeeting,
+    bool? isScreenSharing,
     int? framesSent,
     bool? isGlassesAudioActive,
     String? errorMessage,
@@ -39,6 +42,7 @@ class StreamState extends Equatable {
     return StreamState(
       status: status ?? this.status,
       isInMeeting: isInMeeting ?? this.isInMeeting,
+      isScreenSharing: isScreenSharing ?? this.isScreenSharing,
       framesSent: framesSent ?? this.framesSent,
       isGlassesAudioActive: isGlassesAudioActive ?? this.isGlassesAudioActive,
       errorMessage: errorMessage ?? this.errorMessage,
@@ -46,7 +50,7 @@ class StreamState extends Equatable {
   }
 
   @override
-  List<Object?> get props => [status, isInMeeting, framesSent, isGlassesAudioActive, errorMessage];
+  List<Object?> get props => [status, isInMeeting, isScreenSharing, framesSent, isGlassesAudioActive, errorMessage];
 }
 
 /// Event emitted from native platform channel

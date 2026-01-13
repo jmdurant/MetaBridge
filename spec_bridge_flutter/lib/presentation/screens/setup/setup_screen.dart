@@ -19,7 +19,6 @@ class SetupScreen extends StatefulWidget {
 
 class _SetupScreenState extends State<SetupScreen> {
   final _roomController = TextEditingController(text: 'SpecBridgeRoom');
-  final _serverController = TextEditingController(text: 'https://meet.jit.si');
   final _nameController = TextEditingController(text: 'SpecBridge User');
 
   bool _isConnecting = false;
@@ -28,13 +27,15 @@ class _SetupScreenState extends State<SetupScreen> {
   @override
   void initState() {
     super.initState();
-    _checkPermissions();
     _loadSettings();
+    // Auto-request permissions on open
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _requestPermissions();
+    });
   }
 
   void _loadSettings() {
     final settings = context.read<SettingsService>().settings;
-    _serverController.text = settings.defaultServer;
     if (settings.displayName != null) {
       _nameController.text = settings.displayName!;
     }
@@ -43,17 +44,8 @@ class _SetupScreenState extends State<SetupScreen> {
   @override
   void dispose() {
     _roomController.dispose();
-    _serverController.dispose();
     _nameController.dispose();
     super.dispose();
-  }
-
-  Future<void> _checkPermissions() async {
-    final permissionService = context.read<PermissionService>();
-    final granted = await permissionService.checkAllPermissions();
-    if (mounted) {
-      setState(() => _permissionsGranted = granted);
-    }
   }
 
   Future<void> _requestPermissions() async {
@@ -61,36 +53,11 @@ class _SetupScreenState extends State<SetupScreen> {
     final granted = await permissionService.requestAllPermissions();
     if (mounted) {
       setState(() => _permissionsGranted = granted);
-      if (!granted) {
-        _showPermissionDeniedDialog();
-      }
     }
   }
 
-  void _showPermissionDeniedDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Permissions Required'),
-        content: const Text(
-          'Camera and microphone permissions are required to stream. '
-          'Please grant permissions in Settings.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              context.read<PermissionService>().openSettings();
-            },
-            child: const Text('Open Settings'),
-          ),
-        ],
-      ),
-    );
+  void _openSettings() {
+    context.read<PermissionService>().openSettings();
   }
 
   Future<void> _connectGlasses() async {
@@ -122,10 +89,11 @@ class _SetupScreenState extends State<SetupScreen> {
       return;
     }
 
+    final settings = context.read<SettingsService>().settings;
     final displayName = _nameController.text.trim();
     final config = MeetingConfig(
       roomName: _roomController.text.trim(),
-      serverUrl: _serverController.text.trim(),
+      serverUrl: settings.defaultServer,
       displayName: displayName.isEmpty ? 'SpecBridge User' : displayName,
     );
 
@@ -223,28 +191,29 @@ class _SetupScreenState extends State<SetupScreen> {
 
   Widget _buildPermissionsCard() {
     return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          children: [
-            Icon(
-              _permissionsGranted ? Icons.check_circle : Icons.warning,
-              color: _permissionsGranted ? Colors.green : Colors.orange,
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Text(
-                _permissionsGranted
-                    ? 'All permissions granted'
-                    : 'Camera & microphone permissions required',
+      child: InkWell(
+        onTap: _permissionsGranted ? null : _openSettings,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            children: [
+              Icon(
+                _permissionsGranted ? Icons.check_circle : Icons.warning,
+                color: _permissionsGranted ? Colors.green : Colors.orange,
               ),
-            ),
-            if (!_permissionsGranted)
-              TextButton(
-                onPressed: _requestPermissions,
-                child: const Text('Grant'),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Text(
+                  _permissionsGranted
+                      ? 'All permissions granted'
+                      : 'Tap to open Settings and grant permissions',
+                ),
               ),
-          ],
+              if (!_permissionsGranted)
+                const Icon(Icons.open_in_new, size: 18, color: Colors.grey),
+            ],
+          ),
         ),
       ),
     );
@@ -343,15 +312,6 @@ class _SetupScreenState extends State<SetupScreen> {
             ),
             const SizedBox(height: 16),
             TextField(
-              controller: _serverController,
-              decoration: const InputDecoration(
-                labelText: 'Server URL',
-                hintText: 'https://meet.jit.si',
-                prefixIcon: Icon(Icons.dns),
-              ),
-            ),
-            const SizedBox(height: 16),
-            TextField(
               controller: _nameController,
               decoration: const InputDecoration(
                 labelText: 'Display Name (optional)',
@@ -397,6 +357,13 @@ class _SetupScreenState extends State<SetupScreen> {
               Icons.camera_front,
               'Front Camera',
               'Use phone\'s front camera',
+            ),
+            _buildVideoSourceOption(
+              glassesService,
+              VideoSource.screenShare,
+              Icons.screen_share,
+              'Screen Share',
+              'Share your screen via Jitsi',
             ),
           ],
         ),
@@ -455,8 +422,8 @@ class _SetupScreenState extends State<SetupScreen> {
       case VideoSource.frontCamera:
         buttonLabel = 'Start Streaming (Front Camera)';
         break;
-      case VideoSource.screenRecord:
-        buttonLabel = 'Start Streaming (Screen)';
+      case VideoSource.screenShare:
+        buttonLabel = 'Start Streaming (Screen Share)';
         break;
     }
 

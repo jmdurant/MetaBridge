@@ -25,7 +25,6 @@ class MetaWearablesPlugin(
 
     private var wearablesManager: MetaWearablesManager? = null
     private var streamManager: StreamSessionManager? = null
-    private var jitsiBridge: JitsiFrameBridge? = null
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
@@ -168,10 +167,6 @@ class MetaWearablesPlugin(
 
         scope.launch {
             try {
-                // Initialize Jitsi frame bridge for socket injection
-                jitsiBridge = JitsiFrameBridge(activity)
-                jitsiBridge!!.connect()
-
                 sendEvent(mapOf(
                     "type" to "streamStatus",
                     "status" to "starting"
@@ -211,12 +206,15 @@ class MetaWearablesPlugin(
         // Observe frames
         scope.launch {
             streamManager!!.frameFlow.collectLatest { frameData ->
-                // Send to Jitsi via socket injection
-                jitsiBridge?.sendFrame(frameData)
-
-                // Send to Flutter for preview (every 3rd frame)
-                if (streamManager!!.frameCount % 3 == 0L) {
-                    sendFrame(frameData)
+                // Send to floating overlay for MediaProjection capture
+                if (FloatingPreviewService.isRunning()) {
+                    FloatingPreviewService.updateFrame(frameData)
+                    // Skip Flutter preview - overlay covers everything anyway
+                } else {
+                    // Send to Flutter for preview (every 3rd frame) only if no overlay
+                    if (streamManager!!.frameCount % 3 == 0L) {
+                        sendFrame(frameData)
+                    }
                 }
             }
         }
@@ -253,12 +251,15 @@ class MetaWearablesPlugin(
             // Observe frames from camera
             scope.launch {
                 camera.frameFlow.collectLatest { frameData ->
-                    // Send to Jitsi via socket injection
-                    jitsiBridge?.sendFrame(frameData)
-
-                    // Send to Flutter for preview (every 3rd frame)
-                    if (camera.frameCount % 3 == 0L) {
-                        sendFrame(frameData)
+                    // Send to floating overlay for MediaProjection capture
+                    if (FloatingPreviewService.isRunning()) {
+                        FloatingPreviewService.updateFrame(frameData)
+                        // Skip Flutter preview - overlay covers everything anyway
+                    } else {
+                        // Send to Flutter for preview (every 3rd frame) only if no overlay
+                        if (camera.frameCount % 3 == 0L) {
+                            sendFrame(frameData)
+                        }
                     }
                 }
             }
@@ -279,9 +280,6 @@ class MetaWearablesPlugin(
             // Stop camera streaming
             cameraManager?.stopCapture()
             cameraManager = null
-
-            jitsiBridge?.disconnect()
-            jitsiBridge = null
 
             sendEvent(mapOf(
                 "type" to "streamStatus",
@@ -318,7 +316,6 @@ class MetaWearablesPlugin(
         scope.cancel()
         streamManager?.stopStreaming()
         cameraManager?.stopCapture()
-        jitsiBridge?.disconnect()
         methodChannel.setMethodCallHandler(null)
     }
 

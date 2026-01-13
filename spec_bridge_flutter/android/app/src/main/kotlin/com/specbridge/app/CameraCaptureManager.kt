@@ -16,6 +16,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.util.Size
 import android.view.Surface
+import android.view.WindowManager
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -90,6 +91,19 @@ class CameraCaptureManager(private val context: Context) {
             stopBackgroundThread()
         } catch (e: Exception) {
             android.util.Log.e("CameraCaptureManager", "Error stopping capture: ${e.message}")
+        }
+    }
+
+    // Get device rotation in degrees (0, 90, 180, 270)
+    private fun getDeviceRotation(): Float {
+        val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val rotation = windowManager.defaultDisplay.rotation
+        return when (rotation) {
+            Surface.ROTATION_0 -> 0f
+            Surface.ROTATION_90 -> 90f
+            Surface.ROTATION_180 -> 180f
+            Surface.ROTATION_270 -> 270f
+            else -> 0f
         }
     }
 
@@ -204,15 +218,17 @@ class CameraCaptureManager(private val context: Context) {
             // Decode to bitmap
             val bitmap = BitmapFactory.decodeByteArray(fullResJpeg, 0, fullResJpeg.size)
 
-            // Apply rotation - cameras capture in landscape, need rotation for portrait
+            // Apply rotation based on device orientation
             val rotationMatrix = Matrix()
+            val deviceRotation = getDeviceRotation()
+
             if (useFrontCamera) {
-                // Front camera: rotate 270° and mirror
-                rotationMatrix.postRotate(270f)
+                // Front camera: rotate and mirror
+                rotationMatrix.postRotate((270f + deviceRotation) % 360)
                 rotationMatrix.postScale(-1f, 1f) // Mirror horizontally
             } else {
-                // Back camera: rotate 90° for portrait
-                rotationMatrix.postRotate(90f)
+                // Back camera: subtract device rotation to compensate for landscape flip
+                rotationMatrix.postRotate((90f + 360f - deviceRotation) % 360)
             }
 
             // Apply rotation first

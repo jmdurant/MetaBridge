@@ -83,24 +83,25 @@ class JitsiService extends ChangeNotifier {
       configOverrides: {
         'startWithAudioMuted': config.startWithAudioMuted,
         'startWithVideoMuted': config.startWithVideoMuted,
-        'prejoinPageEnabled': false,
-        // Join anonymously without prompting for login
+        // Disable prejoin page
+        'prejoinConfig.enabled': false,
+        // Auto-knock if lobby is enabled (fallback)
+        'lobby.autoKnock': true,
+        // Join anonymously
         'requireDisplayName': false,
-        'disableModeratorIndicator': true,
-        'enableLobby': false,
-        'enableInsecureRoomNameWarning': false,
       },
       featureFlags: {
-        'ios.screensharing.enabled': true,
-        'recording.enabled': false,
-        'live-streaming.enabled': false,
-        'meeting-password.enabled': false,
-        'invite.enabled': false,
-        'close-captions.enabled': false,
-        // Disable lobby and login for anonymous join
-        'lobby-mode.enabled': false,
-        'security-options.enabled': false,
+        // Disable prejoin page
         'prejoinpage.enabled': false,
+        // Enable screen sharing
+        'ios.screensharing.enabled': true,
+        'android.screensharing.enabled': true,
+        // PiP - enabled but won't work during screen share (Jitsi limitation)
+        'pip.enabled': true,
+        // Basic features
+        'chat.enabled': false,
+        'invite.enabled': false,
+        'recording.enabled': false,
       },
     );
 
@@ -109,9 +110,11 @@ class JitsiService extends ChangeNotifier {
 
     final listener = JitsiMeetEventListener(
       conferenceJoined: (url) {
+        debugPrint('JitsiService: conferenceJoined - $url');
         _updateState(_currentState.copyWith(isInMeeting: true));
       },
       conferenceTerminated: (url, error) {
+        debugPrint('JitsiService: conferenceTerminated - $url, error: $error');
         _updateState(_currentState.copyWith(
           isInMeeting: false,
           isScreenSharing: false,
@@ -136,6 +139,7 @@ class JitsiService extends ChangeNotifier {
         _updateState(_currentState.copyWith(isVideoMuted: muted));
       },
       screenShareToggled: (participantId, sharing) {
+        debugPrint('JitsiService: screenShareToggled callback - participant=$participantId, sharing=$sharing');
         _updateState(_currentState.copyWith(isScreenSharing: sharing));
       },
     );
@@ -166,7 +170,11 @@ class JitsiService extends ChangeNotifier {
 
   /// Toggle screen share
   Future<void> toggleScreenShare() async {
-    await _jitsiMeet.toggleScreenShare(!_currentState.isScreenSharing);
+    final newState = !_currentState.isScreenSharing;
+    debugPrint('JitsiService: toggleScreenShare called');
+    debugPrint('JitsiService: isInMeeting=${_currentState.isInMeeting}, currentlySharing=${_currentState.isScreenSharing}, setting to $newState');
+    await _jitsiMeet.toggleScreenShare(newState);
+    debugPrint('JitsiService: toggleScreenShare SDK call completed');
   }
 
   /// Set audio muted state
@@ -181,5 +189,11 @@ class JitsiService extends ChangeNotifier {
     await _jitsiMeet.setVideoMuted(muted);
     _isVideoMuted = muted;
     _updateState(_currentState.copyWith(isVideoMuted: muted));
+  }
+
+  /// Enter Picture-in-Picture mode
+  Future<void> enterPictureInPicture() async {
+    debugPrint('JitsiService: entering PiP mode');
+    await _jitsiMeet.enterPiP();
   }
 }
