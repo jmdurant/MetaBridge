@@ -33,6 +33,9 @@
             android:name="com.meta.wearable.mwdat.APPLICATION_ID"
             android:value="\ 0" />
         <meta-data
+            android:name="com.meta.wearable.mwdat.CLIENT_TOKEN"
+            android:value="" />
+        <meta-data
             android:name="com.meta.wearable.mwdat.ANALYTICS_OPT_OUT"
             android:value="true" />
 

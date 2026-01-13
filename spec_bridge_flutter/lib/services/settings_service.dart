@@ -4,7 +4,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../data/models/app_settings.dart';
 
 class SettingsService extends ChangeNotifier {
-  static const _keyJitsiMode = 'jitsi_mode';
   static const _keyDefaultServer = 'default_server';
   static const _keyDisplayName = 'display_name';
 
@@ -15,27 +14,13 @@ class SettingsService extends ChangeNotifier {
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
 
-    final modeString = prefs.getString(_keyJitsiMode);
-    // Support both old 'webview' and new 'libJitsiMeet' values for migration
-    final mode = (modeString == 'webview' || modeString == 'libJitsiMeet')
-        ? JitsiMode.libJitsiMeet
-        : JitsiMode.sdk;
-
     _settings = AppSettings(
-      jitsiMode: mode,
+      jitsiMode: JitsiMode.libJitsiMeet, // Only lib-jitsi-meet mode now
       // Use community server - meet.jit.si requires login to be moderator
       defaultServer: prefs.getString(_keyDefaultServer) ?? 'https://meet.ffmuc.net',
       displayName: prefs.getString(_keyDisplayName),
     );
 
-    notifyListeners();
-  }
-
-  Future<void> setJitsiMode(JitsiMode mode) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-        _keyJitsiMode, mode == JitsiMode.libJitsiMeet ? 'libJitsiMeet' : 'sdk');
-    _settings = _settings.copyWith(jitsiMode: mode);
     notifyListeners();
   }
 

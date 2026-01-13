@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../../../data/models/app_settings.dart';
 import '../../../services/settings_service.dart';
 
 class SettingsScreen extends StatelessWidget {
@@ -19,36 +18,6 @@ class SettingsScreen extends StatelessWidget {
 
           return ListView(
             children: [
-              const _SectionHeader('Jitsi Connection Mode'),
-              RadioListTile<JitsiMode>(
-                title: const Text('SDK Mode'),
-                subtitle: const Text(
-                  'Native Jitsi SDK with overlay + screen capture. '
-                  'Shows fullscreen overlay, auto-starts screen share.',
-                ),
-                value: JitsiMode.sdk,
-                groupValue: settings.jitsiMode,
-                onChanged: (mode) {
-                  if (mode != null) {
-                    settingsService.setJitsiMode(mode);
-                  }
-                },
-              ),
-              RadioListTile<JitsiMode>(
-                title: const Text('lib-jitsi-meet (Experimental)'),
-                subtitle: const Text(
-                  'WebView with direct frame injection to WebRTC. '
-                  'No overlay needed - frames sent directly to canvas.',
-                ),
-                value: JitsiMode.libJitsiMeet,
-                groupValue: settings.jitsiMode,
-                onChanged: (mode) {
-                  if (mode != null) {
-                    settingsService.setJitsiMode(mode);
-                  }
-                },
-              ),
-              const Divider(),
               const _SectionHeader('Default Server'),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -81,30 +50,27 @@ class SettingsScreen extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 32),
-              if (settings.jitsiMode == JitsiMode.libJitsiMeet)
-                const Padding(
-                  padding: EdgeInsets.all(16),
-                  child: Card(
-                    color: Colors.amber,
-                    child: Padding(
-                      padding: EdgeInsets.all(12),
-                      child: Row(
-                        children: [
-                          Icon(Icons.science_outlined),
-                          SizedBox(width: 12),
-                          Expanded(
-                            child: Text(
-                              'Experimental: Uses lib-jitsi-meet in a hidden WebView. '
-                              'Frames are drawn to canvas and sent via WebRTC. '
-                              'No screen sharing needed.',
-                              style: TextStyle(fontSize: 13),
-                            ),
+              const Padding(
+                padding: EdgeInsets.all(16),
+                child: Card(
+                  child: Padding(
+                    padding: EdgeInsets.all(12),
+                    child: Row(
+                      children: [
+                        Icon(Icons.info_outline),
+                        SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            'Uses lib-jitsi-meet for WebRTC streaming. '
+                            'Frames are sent directly to the meeting without screen capture.',
+                            style: TextStyle(fontSize: 13),
                           ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
+              ),
             ],
           );
         },

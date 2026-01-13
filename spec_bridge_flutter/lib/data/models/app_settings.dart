@@ -1,7 +1,6 @@
 import 'package:equatable/equatable.dart';
 
 enum JitsiMode {
-  sdk,          // Native SDK with overlay + screen capture
   libJitsiMeet, // lib-jitsi-meet in WebView with direct frame injection
 }
 

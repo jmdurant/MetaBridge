@@ -6,15 +6,12 @@ import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
-import '../../../data/models/app_settings.dart';
 import '../../../data/models/glasses_state.dart';
 import '../../../data/models/meeting_config.dart';
 import '../../../data/models/stream_status.dart';
 import '../../../services/background_streaming_service.dart';
 import '../../../services/glasses_service.dart';
-import '../../../services/jitsi_service.dart';
 import '../../../services/lib_jitsi_service.dart';
-import '../../../services/settings_service.dart';
 import '../../../services/stream_service.dart';
 import 'widgets/control_buttons.dart';
 import 'widgets/lib_jitsi_webview.dart';
@@ -38,7 +35,6 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
   bool _isStarting = true;
   String? _errorMessage;
   Orientation? _lastOrientation;
-  JitsiMode _jitsiMode = JitsiMode.sdk;
   bool _showStats = false;
   bool _backgroundMode = false;
 
@@ -53,20 +49,12 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
   }
 
   void _initializeAndStart() {
-    // Get the Jitsi mode from settings
-    final settings = context.read<SettingsService>().settings;
-    _jitsiMode = settings.jitsiMode;
-
-    // Configure StreamService with the mode and services
+    // Configure StreamService with lib-jitsi-meet service
     final streamService = context.read<StreamService>();
-    streamService.setJitsiMode(_jitsiMode);
+    final libJitsiService = context.read<LibJitsiService>();
+    streamService.setLibJitsiService(libJitsiService);
 
-    if (_jitsiMode == JitsiMode.libJitsiMeet) {
-      final libJitsiService = context.read<LibJitsiService>();
-      streamService.setLibJitsiService(libJitsiService);
-    }
-
-    setState(() {}); // Trigger rebuild to show WebView if needed
+    setState(() {}); // Trigger rebuild to show WebView
 
     _startStreaming();
   }
@@ -94,19 +82,17 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
     super.didChangeAppLifecycleState(state);
     debugPrint('StreamingScreen: Lifecycle state changed to $state');
 
-    if (_jitsiMode == JitsiMode.libJitsiMeet) {
-      final libJitsiService = context.read<LibJitsiService>();
+    final libJitsiService = context.read<LibJitsiService>();
 
-      if (state == AppLifecycleState.resumed) {
-        // App came back to foreground - resume WebView
-        debugPrint('StreamingScreen: Resuming lib-jitsi-meet WebView');
-        libJitsiService.resumeWebView();
-      } else if (state == AppLifecycleState.paused ||
-          state == AppLifecycleState.inactive) {
-        // App going to background - pause to prevent frame queue buildup
-        debugPrint('StreamingScreen: Pausing lib-jitsi-meet WebView');
-        libJitsiService.pauseWebView();
-      }
+    if (state == AppLifecycleState.resumed) {
+      // App came back to foreground - resume WebView
+      debugPrint('StreamingScreen: Resuming lib-jitsi-meet WebView');
+      libJitsiService.resumeWebView();
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      // App going to background - pause to prevent frame queue buildup
+      debugPrint('StreamingScreen: Pausing lib-jitsi-meet WebView');
+      libJitsiService.pauseWebView();
     }
   }
 
@@ -170,8 +156,6 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
   }
 
   Future<void> _toggleBackgroundMode() async {
-    if (_jitsiMode != JitsiMode.libJitsiMeet) return;
-
     final newMode = !_backgroundMode;
     final libJitsiService = context.read<LibJitsiService>();
 
@@ -239,22 +223,20 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
         backgroundColor: Colors.black,
         body: Stack(
           children: [
-            // Hidden WebView for lib-jitsi-meet mode
-            if (_jitsiMode == JitsiMode.libJitsiMeet)
-              Positioned(
-                left: -10,
-                top: -10,
-                child: LibJitsiWebView(
-                  service: context.read<LibJitsiService>(),
-                ),
-              ),
-
-            // Stats overlay (lib-jitsi-meet mode only)
-            if (_jitsiMode == JitsiMode.libJitsiMeet)
-              StatsOverlay(
+            // Hidden WebView for lib-jitsi-meet
+            Positioned(
+              left: -10,
+              top: -10,
+              child: LibJitsiWebView(
                 service: context.read<LibJitsiService>(),
-                isVisible: _showStats,
               ),
+            ),
+
+            // Stats overlay
+            StatsOverlay(
+              service: context.read<LibJitsiService>(),
+              isVisible: _showStats,
+            ),
 
             // Main UI
             SafeArea(
@@ -269,48 +251,24 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
 
                   // Video preview
                   Expanded(
-                    child: _jitsiMode == JitsiMode.libJitsiMeet
-                        ? Consumer<GlassesService>(
-                            builder: (context, glassesService, _) {
-                              return _buildVideoArea(
-                                glassesService.videoSource,
-                                false, // No screen sharing in lib-jitsi-meet mode
-                              );
-                            },
-                          )
-                        : Consumer2<GlassesService, JitsiService>(
-                            builder: (context, glassesService, jitsiService, _) {
-                              return _buildVideoArea(
-                                glassesService.videoSource,
-                                jitsiService.currentState.isScreenSharing,
-                              );
-                            },
-                          ),
+                    child: Consumer<GlassesService>(
+                      builder: (context, glassesService, _) {
+                        return _buildVideoArea(glassesService.videoSource);
+                      },
+                    ),
                   ),
 
                   // Controls
-                  _jitsiMode == JitsiMode.libJitsiMeet
-                      ? Consumer2<LibJitsiService, GlassesService>(
-                          builder: (context, libJitsiService, glassesService, _) {
-                            final state = libJitsiService.currentState;
-                            return _buildControls(
-                              JitsiMeetingState(
-                                isInMeeting: state.isInMeeting,
-                                isAudioMuted: state.isAudioMuted,
-                                isVideoMuted: state.isVideoMuted,
-                              ),
-                              glassesService.videoSource,
-                            );
-                          },
-                        )
-                      : Consumer2<JitsiService, GlassesService>(
-                          builder: (context, jitsiService, glassesService, _) {
-                            return _buildControls(
-                              jitsiService.currentState,
-                              glassesService.videoSource,
-                            );
-                          },
-                        ),
+                  Consumer2<LibJitsiService, GlassesService>(
+                    builder: (context, libJitsiService, glassesService, _) {
+                      final state = libJitsiService.currentState;
+                      return _buildControls(
+                        isAudioMuted: state.isAudioMuted,
+                        isVideoMuted: state.isVideoMuted,
+                        videoSource: glassesService.videoSource,
+                      );
+                    },
+                  ),
                 ],
               ),
             ),
@@ -355,9 +313,8 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
             ),
           ),
 
-          // Background mode toggle (only for lib-jitsi-meet mode on Android)
-          // iOS doesn't support background camera streaming
-          if (_jitsiMode == JitsiMode.libJitsiMeet && Platform.isAndroid)
+          // Background mode toggle (Android only - iOS doesn't support background camera)
+          if (Platform.isAndroid)
             IconButton(
               icon: Icon(
                 _backgroundMode
@@ -369,35 +326,33 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
               tooltip: _backgroundMode ? 'Disable Background Mode' : 'Enable Background Mode',
             ),
 
-          // E2EE status indicator (lib-jitsi-meet mode)
-          if (_jitsiMode == JitsiMode.libJitsiMeet)
-            Consumer<LibJitsiService>(
-              builder: (context, libJitsiService, _) {
-                final isE2EE = libJitsiService.currentState.isE2EEEnabled;
-                return Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4),
-                  child: Tooltip(
-                    message: isE2EE ? 'E2EE Active' : 'E2EE Inactive',
-                    child: Icon(
-                      isE2EE ? Icons.lock : Icons.lock_open,
-                      color: isE2EE ? Colors.green : Colors.grey,
-                      size: 20,
-                    ),
+          // E2EE status indicator
+          Consumer<LibJitsiService>(
+            builder: (context, libJitsiService, _) {
+              final isE2EE = libJitsiService.currentState.isE2EEEnabled;
+              return Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Tooltip(
+                  message: isE2EE ? 'E2EE Active' : 'E2EE Inactive',
+                  child: Icon(
+                    isE2EE ? Icons.lock : Icons.lock_open,
+                    color: isE2EE ? Colors.green : Colors.grey,
+                    size: 20,
                   ),
-                );
-              },
-            ),
+                ),
+              );
+            },
+          ),
 
-          // Stats toggle button (only for lib-jitsi-meet mode)
-          if (_jitsiMode == JitsiMode.libJitsiMeet)
-            IconButton(
-              icon: Icon(
-                _showStats ? Icons.analytics : Icons.analytics_outlined,
-                color: _showStats ? Colors.green : Colors.white,
-              ),
-              onPressed: () => setState(() => _showStats = !_showStats),
-              tooltip: 'Toggle Stats',
+          // Stats toggle button
+          IconButton(
+            icon: Icon(
+              _showStats ? Icons.analytics : Icons.analytics_outlined,
+              color: _showStats ? Colors.green : Colors.white,
             ),
+            onPressed: () => setState(() => _showStats = !_showStats),
+            tooltip: 'Toggle Stats',
+          ),
 
           // Frame counter
           if (streamState.framesSent > 0)
@@ -462,7 +417,7 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
     }
   }
 
-  Widget _buildVideoArea(VideoSource videoSource, bool isScreenSharing) {
+  Widget _buildVideoArea(VideoSource videoSource) {
     if (_isStarting) {
       return const Center(
         child: Column(
@@ -511,32 +466,18 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
       );
     }
 
-    // Screen share mode - show status instead of preview
+    // Screen share mode - show status message
     if (videoSource == VideoSource.screenShare) {
-      return Center(
+      return const Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(
-              isScreenSharing ? Icons.screen_share : Icons.screen_share_outlined,
-              color: isScreenSharing ? Colors.green : Colors.grey,
-              size: 64,
-            ),
-            const SizedBox(height: 16),
+            Icon(Icons.screen_share, color: Colors.grey, size: 64),
+            SizedBox(height: 16),
             Text(
-              isScreenSharing ? 'Screen sharing active' : 'Tap "Share Screen" to start',
-              style: TextStyle(
-                color: isScreenSharing ? Colors.green : Colors.grey,
-                fontSize: 16,
-              ),
+              'Screen share not yet implemented for lib-jitsi-meet',
+              style: TextStyle(color: Colors.grey, fontSize: 16),
             ),
-            if (isScreenSharing) ...[
-              const SizedBox(height: 8),
-              const Text(
-                'Your screen is being shared in the meeting',
-                style: TextStyle(color: Colors.grey, fontSize: 12),
-              ),
-            ],
           ],
         ),
       );
@@ -569,17 +510,19 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
     );
   }
 
-  Widget _buildControls(JitsiMeetingState meetingState, VideoSource videoSource) {
-    final isScreenShareMode = videoSource == VideoSource.screenShare;
-
+  Widget _buildControls({
+    required bool isAudioMuted,
+    required bool isVideoMuted,
+    required VideoSource videoSource,
+  }) {
     return Container(
       padding: const EdgeInsets.all(16),
       color: Colors.black54,
       child: ControlButtons(
-        isAudioMuted: meetingState.isAudioMuted,
-        isVideoMuted: meetingState.isVideoMuted,
-        isScreenSharing: meetingState.isScreenSharing,
-        isScreenShareMode: isScreenShareMode,
+        isAudioMuted: isAudioMuted,
+        isVideoMuted: isVideoMuted,
+        isScreenSharing: false,
+        isScreenShareMode: videoSource == VideoSource.screenShare,
         onToggleAudio: () async {
           final streamService = context.read<StreamService>();
           await streamService.toggleAudio();
@@ -588,10 +531,9 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
           final streamService = context.read<StreamService>();
           await streamService.toggleVideo();
         },
-        onToggleScreenShare: () async {
-          debugPrint('StreamingScreen: Screen share button pressed');
-          final streamService = context.read<StreamService>();
-          await streamService.toggleScreenShare();
+        onToggleScreenShare: () {
+          // Screen share not implemented for lib-jitsi-meet yet
+          debugPrint('Screen share not implemented for lib-jitsi-meet');
         },
         onEndCall: _stopStreaming,
       ),

@@ -18,9 +18,8 @@ dependencies:
   go_router: ^17.0.1
   app_links: ^7.0.0
 
-  # Jitsi Integration
-  jitsi_meet_flutter_sdk: ^11.6.0
-  flutter_inappwebview: 6.2.0-beta.2  # WebView fallback for Jitsi
+  # Jitsi Integration (lib-jitsi-meet via WebView)
+  flutter_inappwebview: 6.2.0-beta.2
 
   # Local Storage
   shared_preferences: ^2.5.4
