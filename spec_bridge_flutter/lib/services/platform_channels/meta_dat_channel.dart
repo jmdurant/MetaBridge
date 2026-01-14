@@ -79,6 +79,12 @@ abstract class MetaDATChannel {
   /// Get streaming stats from native side
   Future<Map<String, dynamic>> getStreamStats();
 
+  /// Enable/disable native WebSocket frame server (bypasses Flutter UI thread)
+  Future<bool> setNativeServerEnabled(bool enabled);
+
+  /// Check if native frame server is enabled
+  Future<bool> isNativeServerEnabled();
+
   /// Event stream for connection/status updates
   Stream<MetaDATEvent> get eventStream;
 
@@ -309,6 +315,31 @@ class MetaDATChannelImpl implements MetaDATChannel {
       return {};
     } on PlatformException {
       return {};
+    }
+  }
+
+  @override
+  Future<bool> setNativeServerEnabled(bool enabled) async {
+    try {
+      final result = await _methodChannel.invokeMethod<bool>(
+        'setNativeServerEnabled',
+        {'enabled': enabled},
+      );
+      debugPrint('MetaDATChannel: Native server ${enabled ? "enabled" : "disabled"}');
+      return result ?? false;
+    } on PlatformException catch (e) {
+      debugPrint('MetaDATChannel: setNativeServerEnabled error: $e');
+      return false;
+    }
+  }
+
+  @override
+  Future<bool> isNativeServerEnabled() async {
+    try {
+      final result = await _methodChannel.invokeMethod<bool>('isNativeServerEnabled');
+      return result ?? false;
+    } on PlatformException {
+      return false;
     }
   }
 

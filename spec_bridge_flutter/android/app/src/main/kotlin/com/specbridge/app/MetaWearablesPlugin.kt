@@ -59,6 +59,11 @@ class MetaWearablesPlugin(
             "stopStreaming" -> stopStreaming(result)
             "disconnect" -> disconnect(result)
             "getStreamStats" -> getStreamStats(result)
+            "setNativeServerEnabled" -> {
+                val enabled = call.argument<Boolean>("enabled") ?: false
+                setNativeServerEnabled(enabled, result)
+            }
+            "isNativeServerEnabled" -> isNativeServerEnabled(result)
             else -> result.notImplemented()
         }
     }
@@ -178,6 +183,10 @@ class MetaWearablesPlugin(
     private var cameraManager: CameraCaptureManager? = null
     private var currentVideoSource: String = "glasses"
 
+    // Native frame server managed at plugin level for early startup
+    private var nativeFrameServer: NativeFrameServer? = null
+    private var useNativeServer = true
+
     private fun startStreaming(width: Int, height: Int, frameRate: Int, videoSource: String, videoQuality: String, result: MethodChannel.Result) {
         currentVideoSource = videoSource
 
@@ -219,10 +228,16 @@ class MetaWearablesPlugin(
         // Initialize stream session manager for glasses
         streamManager = StreamSessionManager(activity, manager)
 
-        // Use direct callback for lowest latency - bypasses SharedFlow
+        // Use direct callback for frame delivery
         streamManager!!.onFrameReady = { frameData ->
-            // Send all frames to Flutter - WebSocket can handle the throughput
-            sendFrame(frameData)
+            // Try native WebSocket first (bypasses Flutter UI thread entirely)
+            val nativeServer = nativeFrameServer
+            if (useNativeServer && nativeServer != null && nativeServer.hasClient) {
+                nativeServer.sendFrame(frameData)
+            } else {
+                // Fall back to Flutter EventChannel (goes through UI thread)
+                sendFrame(frameData)
+            }
         }
 
         // Observe stream status
@@ -262,8 +277,16 @@ class MetaWearablesPlugin(
                         FloatingPreviewService.updateFrame(frameData)
                         // Skip Flutter preview - overlay covers everything anyway
                     } else {
-                        // Send all frames to Flutter - WebSocket can handle the throughput
-                        sendFrame(frameData)
+                        // Use native WebSocket server if available (same as glasses mode)
+                        // This is critical: WebView connects to native server first,
+                        // so camera frames must also go through native server
+                        val nativeServer = nativeFrameServer
+                        if (useNativeServer && nativeServer != null && nativeServer.hasClient) {
+                            nativeServer.sendFrame(frameData)
+                        } else {
+                            // Fallback to Flutter WebSocket
+                            sendFrame(frameData)
+                        }
                     }
                 }
             }
@@ -321,6 +344,31 @@ class MetaWearablesPlugin(
         }
 
         result.success(stats)
+    }
+
+    // MARK: - Native Frame Server
+
+    private fun setNativeServerEnabled(enabled: Boolean, result: MethodChannel.Result) {
+        useNativeServer = enabled
+
+        if (enabled && nativeFrameServer == null) {
+            // Start the native server immediately so it's ready when JS connects
+            nativeFrameServer = NativeFrameServer()
+            nativeFrameServer?.startServer()
+            android.util.Log.d("MetaWearablesPlugin", "Native frame server STARTED on port ${NativeFrameServer.DEFAULT_PORT}")
+        } else if (!enabled && nativeFrameServer != null) {
+            nativeFrameServer?.stopServer()
+            nativeFrameServer = null
+            android.util.Log.d("MetaWearablesPlugin", "Native frame server STOPPED")
+        }
+
+        // Also tell streamManager if it exists
+        streamManager?.setNativeServerEnabled(enabled)
+        result.success(enabled)
+    }
+
+    private fun isNativeServerEnabled(result: MethodChannel.Result) {
+        result.success(useNativeServer && nativeFrameServer != null)
     }
 
     // CPU usage tracking
@@ -407,6 +455,8 @@ class MetaWearablesPlugin(
         scope.cancel()
         streamManager?.stopStreaming()
         cameraManager?.stopCapture()
+        nativeFrameServer?.stopServer()
+        nativeFrameServer = null
         methodChannel.setMethodCallHandler(null)
     }
 

@@ -66,6 +66,13 @@ class StreamSessionManager(
     private var lastEncodeTimeMs: Long = 0
 
     /**
+     * Called by MetaWearablesPlugin - native server is managed there, not here
+     */
+    fun setNativeServerEnabled(enabled: Boolean) {
+        // No-op - native server is managed by MetaWearablesPlugin
+    }
+
+    /**
      * Get current streaming stats for debugging/monitoring
      */
     fun getStats(): Map<String, Any> {
@@ -221,9 +228,10 @@ class StreamSessionManager(
             buffer.get(frameBuffer!!, 0, dataSize)
             buffer.position(originalPosition)
 
-            // Create output buffer: 8-byte header + I420 data
+            // Create output buffer: 12-byte header + I420 data
+            // Header: width (4), height (4), timestamp (4)
             // Use double buffering to avoid allocation every frame
-            val outputSize = 8 + expectedSize
+            val outputSize = 12 + expectedSize
             val outputBuffer = if (useBuffer1) {
                 if (outputBuffer1 == null || outputBuffer1!!.size < outputSize) {
                     outputBuffer1 = ByteArray(outputSize)
@@ -237,13 +245,14 @@ class StreamSessionManager(
             }
             useBuffer1 = !useBuffer1  // Swap for next frame
 
-            // Write header (width, height as little-endian uint32)
-            val headerBuffer = ByteBuffer.wrap(outputBuffer, 0, 8).order(ByteOrder.LITTLE_ENDIAN)
+            // Write header (width, height, timestamp as little-endian uint32)
+            val headerBuffer = ByteBuffer.wrap(outputBuffer, 0, 12).order(ByteOrder.LITTLE_ENDIAN)
             headerBuffer.putInt(width)
             headerBuffer.putInt(height)
+            headerBuffer.putInt((System.currentTimeMillis() and 0xFFFFFFFF).toInt())  // Low 32 bits of timestamp
 
             // Copy I420 data after header
-            frameBuffer!!.copyInto(outputBuffer, 8, 0, expectedSize)
+            frameBuffer!!.copyInto(outputBuffer, 12, 0, expectedSize)
 
             // Send the buffer directly - no copyOf()!
             val frameData = outputBuffer

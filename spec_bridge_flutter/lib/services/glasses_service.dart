@@ -136,6 +136,11 @@ class GlassesService extends ChangeNotifier {
     await _channel.stopStreaming();
   }
 
+  /// Enable/disable native frame server (bypasses Flutter UI thread)
+  Future<bool> setNativeServerEnabled(bool enabled) async {
+    return await _channel.setNativeServerEnabled(enabled);
+  }
+
   /// Disconnect from glasses
   Future<void> disconnect() async {
     await _channel.disconnect();

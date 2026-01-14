@@ -64,6 +64,7 @@ class StreamService extends ChangeNotifier {
     MeetingConfig config, {
     AudioOutput audioOutput = AudioOutput.phoneSpeaker,
     VideoQuality videoQuality = VideoQuality.medium,
+    bool useNativeFrameServer = true,
   }) async {
     try {
       if (_libJitsiService == null) {
@@ -73,6 +74,10 @@ class StreamService extends ChangeNotifier {
       _updateState(_currentState.copyWith(status: StreamStatus.starting));
       _frameCount = 0;
       _currentAudioOutput = audioOutput;
+
+      // Enable/disable native frame server based on setting
+      await _glassesService.setNativeServerEnabled(useNativeFrameServer);
+      debugPrint('StreamService: Native frame server ${useNativeFrameServer ? "enabled" : "disabled"}');
 
       final videoSource = _glassesService.videoSource;
       final isGlassesMode = videoSource.toString().contains('glasses');
@@ -93,42 +98,31 @@ class StreamService extends ChangeNotifier {
         debugPrint('StreamService: Using phone speaker for audio (preserves BT bandwidth for video)');
       }
 
-      // For glasses mode: Start video capture FIRST to avoid conflict with WebView audio setup
-      // The Meta SDK error "Cannot process request from the current state" seems to occur
-      // when WebView audio setup runs concurrently with glasses stream session creation
-      if (isGlassesMode) {
-        debugPrint('StreamService: [Glasses] Starting video capture FIRST...');
-        final captureStarted = await _glassesService.startStreaming(
-          videoQuality: videoQuality.name,
-        );
-        if (!captureStarted) {
-          throw Exception('Failed to start glasses video capture');
-        }
-        debugPrint('StreamService: [Glasses] Video capture started, waiting for stream to stabilize...');
+      // Join meeting first for BOTH modes - this ensures:
+      // 1. WebView is ready and WebSocket is connected
+      // 2. isInMeeting becomes true so frames can flow
+      // 3. Canvas has content when captureStream is called
+      //
+      // The previous approach of starting glasses streaming first caused:
+      // - Frames blocked until 'joined' event (isInMeeting check in sendFrame)
+      // - Empty canvas when captureStream was called
+      // - User not appearing in participant list
+      debugPrint('StreamService: [${ isGlassesMode ? "Glasses" : "Camera"}] Joining meeting first...');
+      await _libJitsiService!.joinMeeting(config);
 
-        // Give glasses stream time to fully establish before WebView touches audio
-        await Future.delayed(const Duration(seconds: 2));
+      // Wait for XMPP signaling to complete - the 'joined' event sets isInMeeting=true
+      // This is critical: frames are blocked until isInMeeting is true
+      await Future.delayed(const Duration(milliseconds: 1500));
+      debugPrint('StreamService: Meeting join initiated, isInMeeting=${_libJitsiService!.isInMeeting}');
 
-        debugPrint('StreamService: [Glasses] Now joining meeting...');
-        await _libJitsiService!.joinMeeting(config);
-        await Future.delayed(const Duration(milliseconds: 500));
-        debugPrint('StreamService: [Glasses] Meeting join initiated');
-      } else {
-        // For camera mode: Join meeting first (original flow works fine)
-        debugPrint('StreamService: [Camera] Joining meeting first...');
-        await _libJitsiService!.joinMeeting(config);
-        await Future.delayed(const Duration(milliseconds: 500));
-        debugPrint('StreamService: [Camera] Meeting join initiated, isInMeeting=${_libJitsiService!.isInMeeting}');
-
-        debugPrint('StreamService: [Camera] Starting video capture...');
-        final captureStarted = await _glassesService.startStreaming(
-          videoQuality: videoQuality.name,
-        );
-        if (!captureStarted) {
-          throw Exception('Failed to start video capture');
-        }
-        debugPrint('StreamService: [Camera] Video capture started');
+      debugPrint('StreamService: [${ isGlassesMode ? "Glasses" : "Camera"}] Starting video capture...');
+      final captureStarted = await _glassesService.startStreaming(
+        videoQuality: videoQuality.name,
+      );
+      if (!captureStarted) {
+        throw Exception('Failed to start video capture');
       }
+      debugPrint('StreamService: Video capture started');
 
       // Set up frame forwarding to lib-jitsi-meet WebView
       _libJitsiFrameSubscription = _glassesService.previewFrameStream.listen((frameData) {

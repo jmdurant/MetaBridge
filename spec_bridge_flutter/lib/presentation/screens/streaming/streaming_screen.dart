@@ -132,6 +132,7 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
         widget.config,
         audioOutput: settings.defaultAudioOutput,
         videoQuality: settings.defaultVideoQuality,
+        useNativeFrameServer: settings.useNativeFrameServer,
       );
       if (mounted) {
         setState(() => _isStarting = false);

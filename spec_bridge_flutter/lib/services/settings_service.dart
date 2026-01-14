@@ -10,6 +10,7 @@ class SettingsService extends ChangeNotifier {
   static const _keyShowPipelineStats = 'show_pipeline_stats';
   static const _keyDefaultAudioOutput = 'default_audio_output';
   static const _keyDefaultVideoQuality = 'default_video_quality';
+  static const _keyUseNativeFrameServer = 'use_native_frame_server';
 
   AppSettings _settings = const AppSettings();
 
@@ -45,6 +46,7 @@ class SettingsService extends ChangeNotifier {
       showPipelineStats: prefs.getBool(_keyShowPipelineStats) ?? true,
       defaultAudioOutput: audioOutput,
       defaultVideoQuality: videoQuality,
+      useNativeFrameServer: prefs.getBool(_keyUseNativeFrameServer) ?? true,
     );
 
     notifyListeners();
@@ -93,6 +95,13 @@ class SettingsService extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_keyDefaultVideoQuality, quality.name);
     _settings = _settings.copyWith(defaultVideoQuality: quality);
+    notifyListeners();
+  }
+
+  Future<void> setUseNativeFrameServer(bool use) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyUseNativeFrameServer, use);
+    _settings = _settings.copyWith(useNativeFrameServer: use);
     notifyListeners();
   }
 }

@@ -209,6 +209,15 @@ class SettingsScreen extends StatelessWidget {
                   settingsService.setShowPipelineStats(value);
                 },
               ),
+              SwitchListTile(
+                title: const Text('Native Frame Server'),
+                subtitle: const Text('Bypass Flutter UI thread for lower latency (experimental)'),
+                secondary: const Icon(Icons.speed),
+                value: settings.useNativeFrameServer,
+                onChanged: (value) {
+                  settingsService.setUseNativeFrameServer(value);
+                },
+              ),
               const SizedBox(height: 32),
               const Padding(
                 padding: EdgeInsets.all(16),

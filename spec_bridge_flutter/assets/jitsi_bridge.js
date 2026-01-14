@@ -18,13 +18,14 @@ let isE2EEEnabled = false;
 // Frame processing stats
 let framesDrawn = 0;
 let framesDroppedJs = 0;
-let framesWhileProcessing = 0;
+let framesDroppedStale = 0;  // Frames dropped due to being too old (timestamp check)
+const MAX_FRAME_AGE_MS = 150;  // Max frame age before dropping (prevents backlog)
 let totalDecodeTimeMs = 0;
 let lastDecodeTimeMs = 0;
 let isProcessingFrame = false;
 let lastFrameArrivalTime = 0;
 let frameArrivalIntervals = [];
-let pendingFrameData = null;
+// pendingFrameData removed - we now drop frames immediately to stay current
 
 // Stats tracking (must be declared before use in handleBinaryFrame)
 let frameCount = 0;
@@ -285,25 +286,51 @@ function measureGpuTime() {
 let frameSocket = null;
 let wsConnected = false;
 let wsReconnectTimer = null;
+let usingNativeServer = false;
+
+// Native server port (Kotlin, bypasses Flutter UI thread)
+const NATIVE_WS_PORT = 8766;
+// Flutter server port (goes through EventChannel/UI thread)
+const FLUTTER_WS_PORT = 8765;
 
 function connectWebSocket() {
   if (frameSocket && frameSocket.readyState === WebSocket.OPEN) {
     return; // Already connected
   }
 
-  console.log('[JitsiBridge] Connecting to WebSocket...');
-  updateStatus('Connecting to frame server...');
+  // Try native server first (port 8766), then fall back to Flutter (port 8765)
+  tryConnectToServer(NATIVE_WS_PORT, true);
+}
+
+function tryConnectToServer(port, tryFallback) {
+  console.log(`[JitsiBridge] Connecting to WebSocket on port ${port}...`);
+  updateStatus(`Connecting to frame server (port ${port})...`);
 
   try {
     // Use 127.0.0.1 explicitly - localhost may not resolve correctly in WebView
-    frameSocket = new WebSocket('ws://127.0.0.1:8765');
+    frameSocket = new WebSocket(`ws://127.0.0.1:${port}`);
     frameSocket.binaryType = 'blob';
 
+    // Set a connection timeout
+    const connectionTimeout = setTimeout(() => {
+      if (frameSocket.readyState !== WebSocket.OPEN) {
+        console.log(`[JitsiBridge] Connection timeout on port ${port}`);
+        frameSocket.close();
+        if (tryFallback && port === NATIVE_WS_PORT) {
+          console.log('[JitsiBridge] Falling back to Flutter server...');
+          tryConnectToServer(FLUTTER_WS_PORT, false);
+        }
+      }
+    }, 2000);
+
     frameSocket.onopen = () => {
-      console.log('[JitsiBridge] WebSocket connected');
-      updateStatus('Frame server connected');
+      clearTimeout(connectionTimeout);
+      usingNativeServer = (port === NATIVE_WS_PORT);
+      const serverType = usingNativeServer ? 'NATIVE' : 'FLUTTER';
+      console.log(`[JitsiBridge] WebSocket connected (${serverType} server, port ${port})`);
+      updateStatus(`Frame server connected (${serverType})`);
       wsConnected = true;
-      notifyFlutter('wsConnected', {});
+      notifyFlutter('wsConnected', { native: usingNativeServer, port: port });
     };
 
     frameSocket.onmessage = (event) => {
@@ -312,10 +339,12 @@ function connectWebSocket() {
     };
 
     frameSocket.onclose = () => {
+      clearTimeout(connectionTimeout);
       console.log('[JitsiBridge] WebSocket disconnected');
       wsConnected = false;
+      usingNativeServer = false;
       notifyFlutter('wsDisconnected', {});
-      // Retry connection after delay
+      // Retry connection after delay - start with native server again
       if (!wsReconnectTimer) {
         wsReconnectTimer = setTimeout(() => {
           wsReconnectTimer = null;
@@ -325,17 +354,26 @@ function connectWebSocket() {
     };
 
     frameSocket.onerror = (error) => {
-      console.error('[JitsiBridge] WebSocket error:', error);
-      console.error('[JitsiBridge] WebSocket readyState:', frameSocket.readyState);
-      console.error('[JitsiBridge] WebSocket url:', frameSocket.url);
+      clearTimeout(connectionTimeout);
+      console.log(`[JitsiBridge] WebSocket error on port ${port}`);
       wsConnected = false;
+      // If native server failed and we should try fallback
+      if (tryFallback && port === NATIVE_WS_PORT) {
+        console.log('[JitsiBridge] Native server unavailable, trying Flutter server...');
+        tryConnectToServer(FLUTTER_WS_PORT, false);
+      }
     };
   } catch (e) {
     console.error('[JitsiBridge] WebSocket connection failed:', e);
-    console.error('[JitsiBridge] Exception:', e.message, e.stack);
     wsConnected = false;
+    if (tryFallback && port === NATIVE_WS_PORT) {
+      tryConnectToServer(FLUTTER_WS_PORT, false);
+    }
   }
 }
+
+// Single-frame buffer - always keep only the latest frame
+let latestFrameBlob = null;
 
 // Handle binary frame from WebSocket
 function handleBinaryFrame(blob) {
@@ -372,25 +410,177 @@ function handleBinaryFrame(blob) {
     const avgInterval = frameArrivalIntervals.length > 0
       ? Math.round(frameArrivalIntervals.reduce((a, b) => a + b, 0) / frameArrivalIntervals.length)
       : 0;
-    console.log('[JitsiBridge] Stats: received=' + frameCount + ' drawn=' + framesDrawn + ' dropped=' + framesDroppedJs + ' whileProcessing=' + framesWhileProcessing + ' avgArrivalMs=' + avgInterval);
+    console.log('[JitsiBridge] Stats: received=' + frameCount + ' drawn=' + framesDrawn + ' dropped=' + framesDroppedJs + ' stale=' + framesDroppedStale + ' avgArrivalMs=' + avgInterval);
   }
 
-  // If already processing, save as pending (drop previous pending)
-  if (isProcessingFrame) {
-    framesWhileProcessing++;
-    if (pendingFrameData) {
-      framesDroppedJs++;
-    }
-    pendingFrameData = blob;
-    return;
+  // Single-frame buffer pattern: always keep only the latest frame
+  // This ensures we always show the freshest frame, skipping all intermediate ones
+  const hadPendingFrame = latestFrameBlob !== null;
+  latestFrameBlob = blob;
+
+  if (hadPendingFrame) {
+    // A frame was waiting but not yet processed - it's now replaced
+    framesDroppedJs++;
   }
 
-  processI420Frame(blob);
+  // If not currently processing, start the processing loop
+  if (!isProcessingFrame) {
+    processLatestFrame();
+  }
 }
 
-// Process I420 frame with WebGL
-async function processI420Frame(blob) {
+// Process the latest frame, then check for newer ones
+async function processLatestFrame() {
+  while (latestFrameBlob !== null) {
+    const blob = latestFrameBlob;
+    latestFrameBlob = null;  // Clear so new arrivals go to latestFrameBlob
+
+    isProcessingFrame = true;
+    await detectAndProcessFrame(blob);
+    isProcessingFrame = false;
+
+    // Loop will continue if a newer frame arrived during processing
+  }
+}
+
+// Detect frame format and route to appropriate processor
+async function detectAndProcessFrame(blob) {
   isProcessingFrame = true;
+
+  try {
+    // Read first 2 bytes to detect format
+    const headerSlice = blob.slice(0, 2);
+    const headerBuffer = await headerSlice.arrayBuffer();
+    const headerBytes = new Uint8Array(headerBuffer);
+
+    // JPEG magic bytes: 0xFF 0xD8
+    if (headerBytes[0] === 0xFF && headerBytes[1] === 0xD8) {
+      await processJpegFrame(blob);
+    } else {
+      await processI420FrameInternal(blob);
+    }
+  } catch (e) {
+    console.error('[JitsiBridge] Frame detection error:', e);
+  }
+
+  isProcessingFrame = false;
+}
+
+// WebGL texture for JPEG rendering (reused across frames)
+let jpegTexture = null;
+
+// Process JPEG frame (from phone camera) using WebGL texture
+async function processJpegFrame(blob) {
+  const decodeStart = Date.now();
+
+  try {
+    if (!gl) {
+      console.error('[JitsiBridge] WebGL not available for JPEG rendering');
+      return;
+    }
+
+    // Create image from blob
+    const imageUrl = URL.createObjectURL(blob);
+    const img = new Image();
+
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = reject;
+      img.src = imageUrl;
+    });
+
+    URL.revokeObjectURL(imageUrl);
+
+    // Resize canvas if needed
+    if (canvas.width !== img.width || canvas.height !== img.height) {
+      console.log('[JitsiBridge] JPEG: Resizing canvas to ' + img.width + 'x' + img.height);
+      canvas.width = img.width;
+      canvas.height = img.height;
+      gl.viewport(0, 0, img.width, img.height);
+    }
+
+    // Create JPEG texture program if not exists (simpler than I420 - just RGB passthrough)
+    if (!jpegTexture) {
+      jpegTexture = gl.createTexture();
+    }
+
+    // Upload image as texture and render
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, jpegTexture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+
+    // For JPEG, we need a simpler shader that just renders RGB texture
+    // Reuse the Y texture uniform (it expects luminance but RGBA works too with some color shift)
+    // Actually, let's just render directly - the shader expects YUV but we can hack it
+    // by putting the image in all 3 texture slots with specific values
+
+    // Simpler approach: use gl.LUMINANCE trick - upload same image to Y,U,V
+    // But this won't give correct colors. Better to create a separate JPEG shader.
+
+    // For now, use drawImage via a temporary 2D canvas, then copy to WebGL
+    // This is slower but works correctly
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = img.width;
+    tempCanvas.height = img.height;
+    const tempCtx = tempCanvas.getContext('2d');
+    tempCtx.drawImage(img, 0, 0);
+
+    // Get image data and extract Y, U, V planes (convert RGB to YUV)
+    const imageData = tempCtx.getImageData(0, 0, img.width, img.height);
+    const rgbaData = imageData.data;
+
+    const ySize = img.width * img.height;
+    const uvSize = (img.width / 2) * (img.height / 2);
+    const yData = new Uint8Array(ySize);
+    const uData = new Uint8Array(uvSize);
+    const vData = new Uint8Array(uvSize);
+
+    // Convert RGBA to I420 YUV
+    for (let y = 0; y < img.height; y++) {
+      for (let x = 0; x < img.width; x++) {
+        const rgbaIdx = (y * img.width + x) * 4;
+        const r = rgbaData[rgbaIdx];
+        const g = rgbaData[rgbaIdx + 1];
+        const b = rgbaData[rgbaIdx + 2];
+
+        // RGB to Y (BT.601)
+        const yVal = 0.299 * r + 0.587 * g + 0.114 * b;
+        yData[y * img.width + x] = Math.round(yVal);
+
+        // Subsample U and V (every 2x2 block)
+        if (y % 2 === 0 && x % 2 === 0) {
+          const uvIdx = (y / 2) * (img.width / 2) + (x / 2);
+          // RGB to U, V (BT.601)
+          const uVal = -0.169 * r - 0.331 * g + 0.5 * b + 128;
+          const vVal = 0.5 * r - 0.419 * g - 0.081 * b + 128;
+          uData[uvIdx] = Math.round(Math.max(0, Math.min(255, uVal)));
+          vData[uvIdx] = Math.round(Math.max(0, Math.min(255, vVal)));
+        }
+      }
+    }
+
+    // Render using existing I420 WebGL pipeline
+    renderI420Frame(yData, uData, vData, img.width, img.height);
+
+    // Track timing
+    lastDecodeTimeMs = Date.now() - decodeStart;
+    totalDecodeTimeMs += lastDecodeTimeMs;
+    framesDrawn++;
+    lastFrameTime = Date.now();
+
+    if (framesDrawn % 100 === 0) {
+      console.log('[JitsiBridge] JPEG frame timing: total=' + lastDecodeTimeMs + 'ms');
+    }
+  } catch (e) {
+    console.error('[JitsiBridge] JPEG processing error:', e);
+  }
+}
+// Process I420 frame with WebGL (internal, called after format detection)
+async function processI420FrameInternal(blob) {
   const decodeStart = Date.now();
 
   try {
@@ -401,8 +591,8 @@ async function processI420Frame(blob) {
     profileStats.blobRead.total += blobReadTime;
     profileStats.blobRead.count++;
 
-    // Parse header: width (4 bytes), height (4 bytes), then I420 data
-    if (buffer.byteLength < 8) {
+    // Parse header: width (4 bytes), height (4 bytes), timestamp (4 bytes), then I420 data
+    if (buffer.byteLength < 12) {
       console.warn('[JitsiBridge] Frame too small:', buffer.byteLength);
       isProcessingFrame = false;
       return;
@@ -414,11 +604,26 @@ async function processI420Frame(blob) {
     }
     const width = preAllocatedDataView.getUint32(0, true);  // little-endian
     const height = preAllocatedDataView.getUint32(4, true);
+    const frameTimestamp = preAllocatedDataView.getUint32(8, true);  // low 32 bits of sender timestamp
+
+    // Check frame age - drop if too old (prevents backlog from accumulating)
+    const now = Date.now() & 0xFFFFFFFF;  // Low 32 bits for comparison
+    let frameAge = now - frameTimestamp;
+    // Handle wraparound (timestamp wraps every ~49 days, but we only care about small deltas)
+    if (frameAge < 0) frameAge += 0x100000000;
+    if (frameAge > MAX_FRAME_AGE_MS && frameAge < 0x80000000) {  // Sanity check: ignore huge values (wraparound)
+      framesDroppedStale++;
+      if (framesDroppedStale === 1 || framesDroppedStale % 50 === 0) {
+        console.log('[JitsiBridge] Dropped stale frame: age=' + frameAge + 'ms, total dropped=' + framesDroppedStale);
+      }
+      isProcessingFrame = false;
+      return;
+    }
 
     // Calculate expected I420 size
     const ySize = width * height;
     const uvSize = (width / 2) * (height / 2);
-    const expectedSize = 8 + ySize + uvSize * 2;
+    const expectedSize = 12 + ySize + uvSize * 2;
 
     if (buffer.byteLength < expectedSize) {
       console.warn('[JitsiBridge] Frame data incomplete: got ' + buffer.byteLength + ', expected ' + expectedSize);
@@ -436,9 +641,9 @@ async function processI420Frame(blob) {
     // Use pre-allocated buffers - direct views into the blob's ArrayBuffer
     // We create typed array views directly on the buffer (no copying, just pointer math)
     // These view objects are small and short-lived, but the actual data is in the blob's buffer
-    const yData = new Uint8Array(buffer, 8, ySize);
-    const uData = new Uint8Array(buffer, 8 + ySize, uvSize);
-    const vData = new Uint8Array(buffer, 8 + ySize + uvSize, uvSize);
+    const yData = new Uint8Array(buffer, 12, ySize);
+    const uData = new Uint8Array(buffer, 12 + ySize, uvSize);
+    const vData = new Uint8Array(buffer, 12 + ySize + uvSize, uvSize);
 
     // Note: The blob's ArrayBuffer will be GC'd after this frame, but that's unavoidable
     // without changing the WebSocket transport. The typed array views above are cheap
@@ -485,15 +690,7 @@ async function processI420Frame(blob) {
   } catch (e) {
     console.error('[JitsiBridge] Frame processing error:', e);
   }
-
-  isProcessingFrame = false;
-
-  // Process pending frame if any
-  if (pendingFrameData) {
-    const nextData = pendingFrameData;
-    pendingFrameData = null;
-    processI420Frame(nextData);
-  }
+  // Note: isProcessingFrame is set to false in detectAndProcessFrame wrapper
 }
 
 // Status display
@@ -608,33 +805,20 @@ async function onConnectionEstablished(room, displayName) {
         enabled: e2eeConfig.enabled
       },
       // Video quality settings with codec preferences for hardware encoding
-      // NOTE: AV1 uses software (libaom) in WebView even on Pixel 9a
-      // H264 has the best hardware encoder support via MediaCodec on Android
+      // IMPORTANT: Only H264 has reliable hardware encoder support on Android
+      // - VP9: Uses libvpx (software) - no HW encoding on most Android devices
+      // - AV1: Uses libaom (software) - Chrome/WebView doesn't expose HW encoder
+      // - VP8: Uses libvpx (software)
       videoQuality: {
-        // Desktop codec preference - H264 first for HW encoding, then VP9, AV1
-        codecPreferenceOrder: ['H264', 'VP9', 'AV1', 'VP8'],
-        // Mobile codec preference - H264 first for reliable HW encoding (MediaCodec)
-        mobileCodecPreferenceOrder: ['H264', 'VP9', 'AV1', 'VP8'],
+        // Only offer H264 - it's the only codec with hardware encoding on Android
+        codecPreferenceOrder: ['H264'],
+        mobileCodecPreferenceOrder: ['H264'],
         // Screenshare codec - use H264 for hardware encoding
         screenshareCodec: 'H264',
         mobileScreenshareCodec: 'H264',
         // Enable adaptive mode to handle CPU overuse
         enableAdaptiveMode: true,
-        // AV1 config with KSVC for efficiency
-        av1: {
-          maxBitratesVideo: {
-            low: 100000,
-            standard: 300000,
-            high: 1000000,
-            fullHd: 2000000,
-            ultraHd: 4000000,
-            ssHigh: 2500000
-          },
-          scalabilityModeEnabled: true,
-          useSimulcast: false,
-          useKSVC: true
-        },
-        // H264 fallback config
+        // H264 config - the only codec we want to use
         h264: {
           maxBitratesVideo: {
             low: 200000,
@@ -645,32 +829,6 @@ async function onConnectionEstablished(room, displayName) {
             ssHigh: 2500000
           },
           scalabilityModeEnabled: true
-        },
-        // VP9 config (good hardware support)
-        vp9: {
-          maxBitratesVideo: {
-            low: 100000,
-            standard: 300000,
-            high: 1200000,
-            fullHd: 2500000,
-            ultraHd: 5000000,
-            ssHigh: 2500000
-          },
-          scalabilityModeEnabled: true,
-          useSimulcast: false,
-          useKSVC: true
-        },
-        // VP8 config (often software-only, avoid if possible)
-        vp8: {
-          maxBitratesVideo: {
-            low: 200000,
-            standard: 500000,
-            high: 1500000,
-            fullHd: 3000000,
-            ultraHd: 6000000,
-            ssHigh: 2500000
-          },
-          scalabilityModeEnabled: false
         }
       }
     });
@@ -688,9 +846,11 @@ async function onConnectionEstablished(room, displayName) {
       // Continue without audio if it fails
     }
 
-    // Create video track immediately on join
+    // Create video track immediately - captureStream creates a LIVE stream
+    // that automatically updates as frames are drawn to the canvas
+    // This must happen BEFORE conference.join() so video is part of SDP negotiation
     await startVideoTrack();
-    console.log('[JitsiBridge] Video track created on join');
+    console.log('[JitsiBridge] Video track created');
 
     // Conference event listeners
     conference.on(JitsiMeetJS.events.conference.CONFERENCE_JOINED, async () => {
@@ -790,7 +950,8 @@ async function onConnectionEstablished(room, displayName) {
 // Get current stats
 function getStats() {
   const avgDecodeMs = framesDrawn > 0 ? Math.round(totalDecodeTimeMs / framesDrawn) : 0;
-  const jsDropRate = frameCount > 0 ? Math.round(framesDroppedJs * 100 / frameCount) : 0;
+  const totalDropped = framesDroppedJs + framesDroppedStale;
+  const jsDropRate = frameCount > 0 ? Math.round(totalDropped * 100 / frameCount) : 0;
   const avgArrivalMs = frameArrivalIntervals.length > 0
     ? Math.round(frameArrivalIntervals.reduce((a, b) => a + b, 0) / frameArrivalIntervals.length)
     : 0;
@@ -803,7 +964,7 @@ function getStats() {
     totalFrames: frameCount,
     framesDrawn: framesDrawn,
     framesDroppedJs: framesDroppedJs,
-    framesWhileProcessing: framesWhileProcessing,
+    framesDroppedStale: framesDroppedStale,
     jsDropRate: jsDropRate,
     lastDecodeMs: lastDecodeTimeMs,
     avgDecodeMs: avgDecodeMs,
@@ -973,8 +1134,11 @@ async function logCodecInfo() {
   try {
     // Try different ways to get the peer connection
     console.log('[JitsiBridge] Checking for peer connections...');
+    console.log('[JitsiBridge] conference keys:', Object.keys(conference).join(', '));
     console.log('[JitsiBridge] jvbJingleSession:', !!conference.jvbJingleSession);
     console.log('[JitsiBridge] p2pJingleSession:', !!conference.p2pJingleSession);
+    console.log('[JitsiBridge] rtc:', !!conference.rtc);
+    console.log('[JitsiBridge] _location:', !!conference._location);
 
     // Get peer connection from conference - lib-jitsi-meet uses different property names
     const jvbSession = conference.jvbJingleSession;
@@ -1025,6 +1189,17 @@ async function logCodecInfo() {
     await logPeerStats('JVB', jvbSession);
     await logPeerStats('P2P', p2pSession);
 
+    // Try via rtc property
+    if (conference.rtc) {
+      console.log('[JitsiBridge] rtc keys:', Object.keys(conference.rtc).join(', '));
+      if (conference.rtc.peerConnections) {
+        console.log('[JitsiBridge] peerConnections:', conference.rtc.peerConnections);
+        for (const [id, pc] of conference.rtc.peerConnections) {
+          await logPeerStats('RTC-' + id, { peerconnection: pc });
+        }
+      }
+    }
+
     // Check encoderImplementation to see if hardware encoding is used
     // Values like "ExternalEncoder" or containing "HW" indicate hardware
     // Values like "libvpx" or "OpenH264" indicate software encoding
@@ -1053,16 +1228,16 @@ async function startVideoTrack() {
     return;
   }
 
-  console.log('[JitsiBridge] Starting video track (peer joined, starting captureStream)');
+  console.log('[JitsiBridge] Starting video track (captureStream is live, updates as frames arrive)');
 
   try {
-    // NOW we create captureStream - only when needed!
+    // NOW we create captureStream - only when we have actual content!
     canvasStream = canvas.captureStream(24); // 24 fps max from glasses
     const videoTrackInfo = [{
       stream: canvasStream,
       sourceType: 'canvas',
       mediaType: 'video',
-      videoType: 'desktop'  // 'desktop' type = screen share, won't trigger camera acquisition
+      videoType: 'camera'  // Must be 'camera' - 'desktop' not supported in WebView
     }];
     const videoTracks = JitsiMeetJS.createLocalTracksFromMediaStreams(videoTrackInfo);
     localVideoTrack = videoTracks[0];
@@ -1072,7 +1247,7 @@ async function startVideoTrack() {
 
     videoTrackStarted = true;
     console.log('[JitsiBridge] Video track started and added to conference');
-    updateStatus('Video streaming started (peer present)');
+    updateStatus('Video streaming started');
     notifyFlutter('videoTrackStarted', {});
   } catch (videoError) {
     console.error('[JitsiBridge] Video track creation failed:', videoError);

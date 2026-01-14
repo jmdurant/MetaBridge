@@ -440,7 +440,7 @@ class LibJitsiService extends ChangeNotifier {
 
     try {
       final result = await _controller?.evaluateJavascript(
-        source: 'JSON.stringify(getStats())',
+        source: 'typeof getStats === "function" ? JSON.stringify(getStats()) : null',
       );
 
       if (result != null && result != 'null') {

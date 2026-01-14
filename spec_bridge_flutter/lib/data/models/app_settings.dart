@@ -25,6 +25,7 @@ class AppSettings extends Equatable {
   final bool showPipelineStats;
   final AudioOutput defaultAudioOutput;
   final VideoQuality defaultVideoQuality;
+  final bool useNativeFrameServer; // Bypass Flutter UI thread for frames
 
   const AppSettings({
     this.jitsiMode = JitsiMode.libJitsiMeet,
@@ -34,6 +35,7 @@ class AppSettings extends Equatable {
     this.showPipelineStats = true,
     this.defaultAudioOutput = AudioOutput.phoneSpeaker,
     this.defaultVideoQuality = VideoQuality.medium,
+    this.useNativeFrameServer = true, // Default enabled for better performance
   });
 
   AppSettings copyWith({
@@ -44,6 +46,7 @@ class AppSettings extends Equatable {
     bool? showPipelineStats,
     AudioOutput? defaultAudioOutput,
     VideoQuality? defaultVideoQuality,
+    bool? useNativeFrameServer,
   }) {
     return AppSettings(
       jitsiMode: jitsiMode ?? this.jitsiMode,
@@ -53,6 +56,7 @@ class AppSettings extends Equatable {
       showPipelineStats: showPipelineStats ?? this.showPipelineStats,
       defaultAudioOutput: defaultAudioOutput ?? this.defaultAudioOutput,
       defaultVideoQuality: defaultVideoQuality ?? this.defaultVideoQuality,
+      useNativeFrameServer: useNativeFrameServer ?? this.useNativeFrameServer,
     );
   }
 
@@ -65,5 +69,6 @@ class AppSettings extends Equatable {
         showPipelineStats,
         defaultAudioOutput,
         defaultVideoQuality,
+        useNativeFrameServer,
       ];
 }
