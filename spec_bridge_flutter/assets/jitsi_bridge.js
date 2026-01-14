@@ -44,6 +44,13 @@ let e2eeConfig = { enabled: false, passphrase: '' };
 let remoteParticipantCount = 0;
 let videoTrackStarted = false;
 
+// Video source mode: 'canvas' (for glasses) or 'camera' (direct getUserMedia)
+let videoSourceMode = 'canvas';
+let cameraStream = null;  // getUserMedia stream for camera mode
+
+// Camera preview video element
+const cameraPreview = document.getElementById('cameraPreview');
+
 // Canvas setup - use WebGL for I420 YUV rendering
 const canvas = document.getElementById('videoCanvas');
 let canvasStream = null;
@@ -855,6 +862,11 @@ async function onConnectionEstablished(room, displayName) {
     // Conference event listeners
     conference.on(JitsiMeetJS.events.conference.CONFERENCE_JOINED, async () => {
       isJoined = true;
+      console.log('[JitsiBridge] === CONFERENCE_JOINED ===');
+      console.log('[JitsiBridge] localVideoTrack exists:', !!localVideoTrack);
+      console.log('[JitsiBridge] videoTrackStarted:', videoTrackStarted);
+      console.log('[JitsiBridge] jvbJingleSession:', !!conference.jvbJingleSession);
+      console.log('[JitsiBridge] p2pJingleSession:', !!conference.p2pJingleSession);
       updateStatus('Joined room: ' + room);
 
       // Log codec information for debugging
@@ -869,6 +881,11 @@ async function onConnectionEstablished(room, displayName) {
         setTimeout(() => {
           logCodecInfo();
         }, 3000);
+
+        // Run full diagnosis after 5 seconds to capture state for debugging intermittent issues
+        setTimeout(() => {
+          diagnosePeerConnection();
+        }, 5000);
       } catch (e) {
         console.log('[JitsiBridge] Could not log track info:', e);
       }
@@ -928,6 +945,22 @@ async function onConnectionEstablished(room, displayName) {
       });
     });
 
+    // ICE connection state changes - helps diagnose connectivity issues
+    conference.on(JitsiMeetJS.events.conference.CONNECTION_INTERRUPTED, () => {
+      console.log('[JitsiBridge] CONNECTION_INTERRUPTED - ICE connection lost');
+      notifyFlutter('connectionInterrupted', {});
+    });
+
+    conference.on(JitsiMeetJS.events.conference.CONNECTION_RESTORED, () => {
+      console.log('[JitsiBridge] CONNECTION_RESTORED - ICE connection restored');
+      notifyFlutter('connectionRestored', {});
+    });
+
+    // Data channel events
+    conference.on(JitsiMeetJS.events.conference.DATA_CHANNEL_OPENED, () => {
+      console.log('[JitsiBridge] DATA_CHANNEL_OPENED - bridge channel ready');
+    });
+
     // Add audio track to conference
     if (localAudioTrack) {
       await conference.addTrack(localAudioTrack);
@@ -939,6 +972,13 @@ async function onConnectionEstablished(room, displayName) {
     }
 
     // Join the conference
+    console.log('[JitsiBridge] === Calling conference.join() ===');
+    console.log('[JitsiBridge] Pre-join state:');
+    console.log('[JitsiBridge]   localVideoTrack:', !!localVideoTrack);
+    console.log('[JitsiBridge]   localAudioTrack:', !!localAudioTrack);
+    console.log('[JitsiBridge]   videoTrackStarted:', videoTrackStarted);
+    console.log('[JitsiBridge]   videoSourceMode:', videoSourceMode);
+    console.log('[JitsiBridge]   cameraStream:', !!cameraStream);
     conference.join();
 
   } catch (e) {
@@ -955,10 +995,25 @@ function getStats() {
   const avgArrivalMs = frameArrivalIntervals.length > 0
     ? Math.round(frameArrivalIntervals.reduce((a, b) => a + b, 0) / frameArrivalIntervals.length)
     : 0;
+
+  // For camera mode, get resolution from camera track
+  let resolution = canvas.width + 'x' + canvas.height;
+  let width = canvas.width;
+  let height = canvas.height;
+  if (videoSourceMode === 'camera' && cameraStream) {
+    const videoTrack = cameraStream.getVideoTracks()[0];
+    if (videoTrack) {
+      const settings = videoTrack.getSettings();
+      width = settings.width || 0;
+      height = settings.height || 0;
+      resolution = width + 'x' + height;
+    }
+  }
+
   return {
-    resolution: canvas.width + 'x' + canvas.height,
-    width: canvas.width,
-    height: canvas.height,
+    resolution: resolution,
+    width: width,
+    height: height,
     fps: currentFps,
     bitrate: currentBitrate,
     totalFrames: frameCount,
@@ -974,7 +1029,9 @@ function getStats() {
     hasAudioTrack: localAudioTrack !== null,
     hasVideoTrack: localVideoTrack !== null,
     isE2EEEnabled: isE2EEEnabled,
-    wsConnected: wsConnected
+    wsConnected: wsConnected,
+    videoSourceMode: videoSourceMode,
+    hasCameraStream: cameraStream !== null
   };
 }
 
@@ -1104,6 +1161,18 @@ function leaveRoom() {
     e2eeConfig = { enabled: false, passphrase: '' };
     remoteParticipantCount = 0;
     videoTrackStarted = false;
+
+    // Clean up camera preview
+    if (cameraStream) {
+      cameraStream.getTracks().forEach(track => track.stop());
+      cameraStream = null;
+    }
+    if (cameraPreview) {
+      cameraPreview.srcObject = null;
+      document.body.classList.remove('camera-mode');
+    }
+    videoSourceMode = 'canvas';
+
     updateStatus('Left room');
     notifyFlutter('left', {});
   } catch (e) {
@@ -1216,11 +1285,119 @@ setInterval(() => {
   }
 }, 30000);
 
+// Set video source mode: 'glasses', 'frontCamera', or 'backCamera'
+// For camera modes, we use getUserMedia directly (much more efficient)
+// For glasses mode, we use canvas captureStream (frames from native)
+async function setVideoSource(source) {
+  console.log('[JitsiBridge] ========== setVideoSource START ==========');
+  console.log('[JitsiBridge] setVideoSource called with:', source);
+  console.log('[JitsiBridge] Current videoSourceMode:', videoSourceMode);
+  console.log('[JitsiBridge] Current videoTrackStarted:', videoTrackStarted);
+
+  const isCameraMode = source === 'frontCamera' || source === 'backCamera';
+  const newMode = isCameraMode ? 'camera' : 'canvas';
+  console.log('[JitsiBridge] isCameraMode:', isCameraMode, 'newMode:', newMode);
+
+  // If mode is changing and we have an active track, we need to switch
+  if (newMode !== videoSourceMode && videoTrackStarted) {
+    console.log('[JitsiBridge] Video source mode changing from', videoSourceMode, 'to', newMode, '- stopping current track');
+    await stopVideoTrack();
+  }
+
+  videoSourceMode = newMode;
+  console.log('[JitsiBridge] videoSourceMode set to:', videoSourceMode);
+
+  if (isCameraMode) {
+    // Get camera stream via getUserMedia
+    const facingMode = source === 'frontCamera' ? 'user' : 'environment';
+    console.log('[JitsiBridge] Requesting camera with facingMode:', facingMode);
+
+    try {
+      // Stop any existing camera stream
+      if (cameraStream) {
+        console.log('[JitsiBridge] Stopping existing camera stream');
+        cameraStream.getTracks().forEach(track => track.stop());
+        cameraStream = null;
+      }
+
+      console.log('[JitsiBridge] Calling navigator.mediaDevices.getUserMedia...');
+      console.log('[JitsiBridge] navigator.mediaDevices available:', !!navigator.mediaDevices);
+      console.log('[JitsiBridge] getUserMedia available:', !!navigator.mediaDevices?.getUserMedia);
+
+      cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: facingMode,
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { ideal: 30 }
+        },
+        audio: false  // Audio handled separately
+      });
+
+      const videoTrack = cameraStream.getVideoTracks()[0];
+      const settings = videoTrack ? videoTrack.getSettings() : {};
+      console.log('[JitsiBridge] Camera stream obtained!');
+      console.log('[JitsiBridge] Video track:', videoTrack?.label);
+      console.log('[JitsiBridge] Settings:', JSON.stringify(settings));
+
+      // Show camera preview in video element
+      if (cameraPreview) {
+        cameraPreview.srcObject = cameraStream;
+        document.body.classList.add('camera-mode');
+        console.log('[JitsiBridge] Camera preview enabled');
+      }
+
+      notifyFlutter('cameraReady', { source: source });
+      console.log('[JitsiBridge] ========== setVideoSource SUCCESS ==========');
+      return true;
+    } catch (e) {
+      console.error('[JitsiBridge] getUserMedia FAILED:', e.name, e.message);
+      console.error('[JitsiBridge] Error stack:', e.stack);
+      notifyFlutter('error', { message: 'Camera access failed: ' + e.message });
+      console.log('[JitsiBridge] ========== setVideoSource FAILED ==========');
+      return false;
+    }
+  } else {
+    // Canvas mode for glasses - release camera if we had one
+    if (cameraStream) {
+      console.log('[JitsiBridge] Releasing camera stream for canvas mode');
+      cameraStream.getTracks().forEach(track => track.stop());
+      cameraStream = null;
+    }
+
+    // Hide camera preview, show canvas
+    if (cameraPreview) {
+      cameraPreview.srcObject = null;
+      document.body.classList.remove('camera-mode');
+      console.log('[JitsiBridge] Camera preview disabled, showing canvas');
+    }
+
+    console.log('[JitsiBridge] Set to canvas mode for glasses');
+    console.log('[JitsiBridge] ========== setVideoSource SUCCESS (canvas) ==========');
+    return true;
+  }
+}
+
+// Get current video source mode
+function getVideoSourceMode() {
+  return {
+    mode: videoSourceMode,
+    hasCamera: cameraStream !== null,
+    hasCameraTrack: cameraStream?.getVideoTracks().length > 0
+  };
+}
+
 // Expose functions to Flutter
-// Create video track from canvas captureStream
+// Create video track from canvas captureStream or camera getUserMedia
 async function startVideoTrack() {
+  console.log('[JitsiBridge] ========== startVideoTrack START ==========');
+  console.log('[JitsiBridge] videoTrackStarted:', videoTrackStarted);
+  console.log('[JitsiBridge] conference:', !!conference);
+  console.log('[JitsiBridge] videoSourceMode:', videoSourceMode);
+  console.log('[JitsiBridge] cameraStream:', !!cameraStream);
+
   if (videoTrackStarted) {
-    console.log('[JitsiBridge] Video track already started');
+    console.log('[JitsiBridge] Video track already started - returning');
     return;
   }
   if (!conference) {
@@ -1228,29 +1405,79 @@ async function startVideoTrack() {
     return;
   }
 
-  console.log('[JitsiBridge] Starting video track (captureStream is live, updates as frames arrive)');
+  console.log('[JitsiBridge] Starting video track, mode:', videoSourceMode);
 
   try {
-    // NOW we create captureStream - only when we have actual content!
-    canvasStream = canvas.captureStream(24); // 24 fps max from glasses
-    const videoTrackInfo = [{
-      stream: canvasStream,
-      sourceType: 'canvas',
-      mediaType: 'video',
-      videoType: 'camera'  // Must be 'camera' - 'desktop' not supported in WebView
-    }];
+    let videoTrackInfo;
+
+    if (videoSourceMode === 'camera' && cameraStream) {
+      // Camera mode: use getUserMedia stream directly
+      // This is the efficient path - no canvas, no frame processing!
+      console.log('[JitsiBridge] Using camera stream directly (getUserMedia)');
+      console.log('[JitsiBridge] Camera stream tracks:', cameraStream.getTracks().length);
+      const videoTrack = cameraStream.getVideoTracks()[0];
+      console.log('[JitsiBridge] Camera video track:', videoTrack?.label, 'readyState:', videoTrack?.readyState);
+
+      // Get resolution from track settings for logging
+      const settings = videoTrack ? videoTrack.getSettings() : {};
+      const width = settings.width || 1280;
+      const height = settings.height || 720;
+      console.log('[JitsiBridge] Camera resolution:', width, 'x', height);
+      console.log('[JitsiBridge] Camera track settings:', JSON.stringify(settings));
+
+      // Must include constraints with height/width - JitsiLocalTrack constructor requires them
+      // See: https://github.com/jitsi/lib-jitsi-meet/blob/master/modules/RTC/JitsiLocalTrack.ts
+      videoTrackInfo = [{
+        stream: cameraStream,
+        track: videoTrack,
+        sourceType: 'camera',
+        mediaType: 'video',
+        videoType: 'camera',
+        constraints: {
+          height: { ideal: height },
+          width: { ideal: width }
+        }
+      }];
+    } else {
+      // Canvas mode: use captureStream for glasses frames
+      console.log('[JitsiBridge] Using canvas captureStream for glasses');
+      console.log('[JitsiBridge] Canvas dimensions:', canvas.width, 'x', canvas.height);
+      canvasStream = canvas.captureStream(24); // 24 fps max from glasses
+      videoTrackInfo = [{
+        stream: canvasStream,
+        sourceType: 'canvas',
+        mediaType: 'video',
+        videoType: 'camera'  // Must be 'camera' - 'desktop' not supported in WebView
+      }];
+    }
+
+    console.log('[JitsiBridge] Creating Jitsi local track from stream...');
     const videoTracks = JitsiMeetJS.createLocalTracksFromMediaStreams(videoTrackInfo);
     localVideoTrack = videoTracks[0];
+    console.log('[JitsiBridge] Local video track created:', !!localVideoTrack);
+    if (localVideoTrack) {
+      console.log('[JitsiBridge] Track type:', localVideoTrack.getType());
+      console.log('[JitsiBridge] Track videoType:', localVideoTrack.videoType);
+      console.log('[JitsiBridge] Track ID:', localVideoTrack.getId());
+    }
 
-    // Add to conference
+    // Add to conference - log state before and after
+    console.log('[JitsiBridge] Adding track to conference...');
+    console.log('[JitsiBridge] Before addTrack - jvbJingleSession:', !!conference.jvbJingleSession);
+    console.log('[JitsiBridge] Before addTrack - p2pJingleSession:', !!conference.p2pJingleSession);
     await conference.addTrack(localVideoTrack);
+    console.log('[JitsiBridge] After addTrack - jvbJingleSession:', !!conference.jvbJingleSession);
+    console.log('[JitsiBridge] After addTrack - p2pJingleSession:', !!conference.p2pJingleSession);
 
     videoTrackStarted = true;
-    console.log('[JitsiBridge] Video track started and added to conference');
-    updateStatus('Video streaming started');
-    notifyFlutter('videoTrackStarted', {});
+    console.log('[JitsiBridge] Video track started and added to conference (mode:', videoSourceMode, ')');
+    console.log('[JitsiBridge] ========== startVideoTrack SUCCESS ==========');
+    updateStatus('Video streaming started (' + videoSourceMode + ')');
+    notifyFlutter('videoTrackStarted', { mode: videoSourceMode });
   } catch (videoError) {
     console.error('[JitsiBridge] Video track creation failed:', videoError);
+    console.error('[JitsiBridge] Error stack:', videoError.stack);
+    console.log('[JitsiBridge] ========== startVideoTrack FAILED ==========');
     notifyFlutter('error', { message: 'Video track failed: ' + videoError.message });
   }
 }
@@ -1261,11 +1488,13 @@ async function stopVideoTrack() {
     return;
   }
 
-  console.log('[JitsiBridge] Stopping video track (no peers remaining)');
+  console.log('[JitsiBridge] Stopping video track');
 
   try {
     if (localVideoTrack) {
-      await conference.removeTrack(localVideoTrack);
+      if (conference) {
+        await conference.removeTrack(localVideoTrack);
+      }
       localVideoTrack.dispose();
       localVideoTrack = null;
     }
@@ -1273,10 +1502,11 @@ async function stopVideoTrack() {
       canvasStream.getTracks().forEach(track => track.stop());
       canvasStream = null;
     }
+    // Note: don't stop cameraStream here - it's managed by setVideoSource
 
     videoTrackStarted = false;
-    console.log('[JitsiBridge] Video track stopped - CPU savings when alone');
-    updateStatus('Video streaming paused (no peers)');
+    console.log('[JitsiBridge] Video track stopped');
+    updateStatus('Video streaming paused');
     notifyFlutter('videoTrackStopped', {});
   } catch (e) {
     console.error('[JitsiBridge] Error stopping video track:', e);
@@ -1297,6 +1527,55 @@ function toggleCaptureStream() {
     console.log('[JitsiBridge] captureStream RESUMED');
   }
   return captureStreamPaused ? 'stopped' : 'running';
+}
+
+// Comprehensive diagnostic dump - call this when things fail
+function diagnosePeerConnection() {
+  console.log('[JitsiBridge] ============ PEER CONNECTION DIAGNOSIS ============');
+  console.log('[JitsiBridge] isJoined:', isJoined);
+  console.log('[JitsiBridge] videoTrackStarted:', videoTrackStarted);
+  console.log('[JitsiBridge] videoSourceMode:', videoSourceMode);
+  console.log('[JitsiBridge] cameraStream:', !!cameraStream);
+  console.log('[JitsiBridge] localVideoTrack:', !!localVideoTrack);
+  console.log('[JitsiBridge] localAudioTrack:', !!localAudioTrack);
+  console.log('[JitsiBridge] conference:', !!conference);
+
+  if (conference) {
+    console.log('[JitsiBridge] jvbJingleSession:', !!conference.jvbJingleSession);
+    console.log('[JitsiBridge] p2pJingleSession:', !!conference.p2pJingleSession);
+    console.log('[JitsiBridge] room:', conference.room?.roomname || 'unknown');
+
+    // Check local tracks in conference
+    const localTracks = conference.getLocalTracks();
+    console.log('[JitsiBridge] Conference local tracks:', localTracks.length);
+    localTracks.forEach((track, i) => {
+      console.log('[JitsiBridge]   Track ' + i + ':', track.getType(), 'videoType:', track.videoType);
+    });
+
+    // Check peer connections
+    if (conference.jvbJingleSession?.peerconnection?.peerconnection) {
+      const pc = conference.jvbJingleSession.peerconnection.peerconnection;
+      console.log('[JitsiBridge] JVB PeerConnection state:', pc.connectionState);
+      console.log('[JitsiBridge] JVB ICE state:', pc.iceConnectionState);
+      console.log('[JitsiBridge] JVB signaling state:', pc.signalingState);
+
+      // Check senders
+      const senders = pc.getSenders();
+      console.log('[JitsiBridge] JVB senders:', senders.length);
+      senders.forEach((sender, i) => {
+        console.log('[JitsiBridge]   Sender ' + i + ':', sender.track?.kind || 'no track', 'enabled:', sender.track?.enabled);
+      });
+    } else {
+      console.log('[JitsiBridge] No JVB peer connection available');
+    }
+
+    if (conference.p2pJingleSession?.peerconnection?.peerconnection) {
+      const pc = conference.p2pJingleSession.peerconnection.peerconnection;
+      console.log('[JitsiBridge] P2P PeerConnection state:', pc.connectionState);
+      console.log('[JitsiBridge] P2P ICE state:', pc.iceConnectionState);
+    }
+  }
+  console.log('[JitsiBridge] =====================================================');
 }
 
 // Debug function to check what tracks exist and their states
@@ -1336,6 +1615,9 @@ window.debugTracks = debugTracks;
 window.logProfileStats = logProfileStats;
 window.startVideoTrack = startVideoTrack;
 window.stopVideoTrack = stopVideoTrack;
+window.setVideoSource = setVideoSource;
+window.getVideoSourceMode = getVideoSourceMode;
+window.diagnosePeerConnection = diagnosePeerConnection;
 
 // Auto-initialize when script loads
 if (typeof JitsiMeetJS !== 'undefined') {

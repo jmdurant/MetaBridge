@@ -98,16 +98,29 @@ class StreamService extends ChangeNotifier {
         debugPrint('StreamService: Using phone speaker for audio (preserves BT bandwidth for video)');
       }
 
-      // Join meeting first for BOTH modes - this ensures:
-      // 1. WebView is ready and WebSocket is connected
-      // 2. isInMeeting becomes true so frames can flow
-      // 3. Canvas has content when captureStream is called
-      //
-      // The previous approach of starting glasses streaming first caused:
-      // - Frames blocked until 'joined' event (isInMeeting check in sendFrame)
-      // - Empty canvas when captureStream was called
-      // - User not appearing in participant list
-      debugPrint('StreamService: [${ isGlassesMode ? "Glasses" : "Camera"}] Joining meeting first...');
+      // For camera mode, we need to set up getUserMedia BEFORE joining
+      // because startVideoTrack() is called inside onConnectionEstablished
+      if (!isGlassesMode) {
+        // Camera mode: Use getUserMedia directly in WebView (much more efficient!)
+        // No native capture needed - WebView handles camera access via WebRTC
+        debugPrint('StreamService: Using direct camera mode (getUserMedia in WebView)');
+
+        // Notify native side of video source for stats tracking
+        await _glassesService.notifyVideoSourceToNative(videoSource);
+
+        // Tell WebView to use camera mode BEFORE joining - this acquires camera via getUserMedia
+        // This must happen before startVideoTrack() which is called in onConnectionEstablished
+        final cameraReady = await _libJitsiService!.setVideoSource(videoSource.name);
+        if (!cameraReady) {
+          throw Exception('Failed to access camera in WebView');
+        }
+        debugPrint('StreamService: Camera ready in WebView, now joining meeting...');
+      }
+
+      // Join meeting - this triggers startVideoTrack() in onConnectionEstablished
+      // For camera: will use the getUserMedia stream we just acquired
+      // For glasses: will use canvas mode (default)
+      debugPrint('StreamService: [${ isGlassesMode ? "Glasses" : "Camera"}] Joining meeting...');
       await _libJitsiService!.joinMeeting(config);
 
       // Wait for XMPP signaling to complete - the 'joined' event sets isInMeeting=true
@@ -115,32 +128,37 @@ class StreamService extends ChangeNotifier {
       await Future.delayed(const Duration(milliseconds: 1500));
       debugPrint('StreamService: Meeting join initiated, isInMeeting=${_libJitsiService!.isInMeeting}');
 
-      debugPrint('StreamService: [${ isGlassesMode ? "Glasses" : "Camera"}] Starting video capture...');
-      final captureStarted = await _glassesService.startStreaming(
-        videoQuality: videoQuality.name,
-      );
-      if (!captureStarted) {
-        throw Exception('Failed to start video capture');
+      // For glasses mode, start native streaming after joining
+      if (isGlassesMode) {
+        debugPrint('StreamService: Starting glasses video capture...');
+
+        // Start native streaming
+        final captureStarted = await _glassesService.startStreaming(
+          videoQuality: videoQuality.name,
+        );
+        if (!captureStarted) {
+          throw Exception('Failed to start video capture');
+        }
+        debugPrint('StreamService: Glasses video capture started');
+
+        // Set up frame forwarding to lib-jitsi-meet WebView
+        _libJitsiFrameSubscription = _glassesService.previewFrameStream.listen((frameData) {
+          _frameCount++;
+
+          if (_frameCount == 1) {
+            debugPrint('StreamService: First frame received (${frameData.length} bytes)');
+          }
+
+          // Send every frame to lib-jitsi-meet (it handles throttling)
+          _libJitsiService!.sendFrame(frameData);
+
+          // Update UI every 30 frames
+          if (_frameCount % 30 == 0) {
+            debugPrint('StreamService: Sent $_frameCount frames');
+            _updateState(_currentState.copyWith(framesSent: _frameCount));
+          }
+        });
       }
-      debugPrint('StreamService: Video capture started');
-
-      // Set up frame forwarding to lib-jitsi-meet WebView
-      _libJitsiFrameSubscription = _glassesService.previewFrameStream.listen((frameData) {
-        _frameCount++;
-
-        if (_frameCount == 1) {
-          debugPrint('StreamService: First frame received (${frameData.length} bytes)');
-        }
-
-        // Send every frame to lib-jitsi-meet (it handles throttling)
-        _libJitsiService!.sendFrame(frameData);
-
-        // Update UI every 30 frames
-        if (_frameCount % 30 == 0) {
-          debugPrint('StreamService: Sent $_frameCount frames');
-          _updateState(_currentState.copyWith(framesSent: _frameCount));
-        }
-      });
 
       _updateState(_currentState.copyWith(
         status: StreamStatus.streaming,

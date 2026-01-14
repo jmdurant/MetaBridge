@@ -17,14 +17,19 @@ class LibJitsiStats {
   final int totalFrames;
   final int framesDrawn;
   final int framesDroppedJs;
+  final int framesDroppedStale; // Frames dropped due to being too old
   final int jsDropRate;
   final int lastDecodeMs;
   final int avgDecodeMs;
+  final int avgArrivalMs; // Average frame arrival interval
   final int totalBytes;
   final bool isJoined;
   final bool hasAudioTrack;
   final bool hasVideoTrack;
   final bool wsConnected;
+  final bool isE2EEEnabled;
+  final String videoSourceMode; // 'canvas' or 'camera'
+  final bool hasCameraStream; // true if using getUserMedia
 
   const LibJitsiStats({
     this.resolution = '0x0',
@@ -35,14 +40,19 @@ class LibJitsiStats {
     this.totalFrames = 0,
     this.framesDrawn = 0,
     this.framesDroppedJs = 0,
+    this.framesDroppedStale = 0,
     this.jsDropRate = 0,
     this.lastDecodeMs = 0,
     this.avgDecodeMs = 0,
+    this.avgArrivalMs = 0,
     this.totalBytes = 0,
     this.isJoined = false,
     this.hasAudioTrack = false,
     this.hasVideoTrack = false,
     this.wsConnected = false,
+    this.isE2EEEnabled = false,
+    this.videoSourceMode = 'canvas',
+    this.hasCameraStream = false,
   });
 
   factory LibJitsiStats.fromJson(Map<String, dynamic> json) {
@@ -55,14 +65,19 @@ class LibJitsiStats {
       totalFrames: json['totalFrames'] as int? ?? 0,
       framesDrawn: json['framesDrawn'] as int? ?? 0,
       framesDroppedJs: json['framesDroppedJs'] as int? ?? 0,
+      framesDroppedStale: json['framesDroppedStale'] as int? ?? 0,
       jsDropRate: json['jsDropRate'] as int? ?? 0,
       lastDecodeMs: json['lastDecodeMs'] as int? ?? 0,
       avgDecodeMs: json['avgDecodeMs'] as int? ?? 0,
+      avgArrivalMs: json['avgArrivalMs'] as int? ?? 0,
       totalBytes: json['totalBytes'] as int? ?? 0,
       isJoined: json['isJoined'] as bool? ?? false,
       hasAudioTrack: json['hasAudioTrack'] as bool? ?? false,
       hasVideoTrack: json['hasVideoTrack'] as bool? ?? false,
       wsConnected: json['wsConnected'] as bool? ?? false,
+      isE2EEEnabled: json['isE2EEEnabled'] as bool? ?? false,
+      videoSourceMode: json['videoSourceMode'] as String? ?? 'canvas',
+      hasCameraStream: json['hasCameraStream'] as bool? ?? false,
     );
   }
 
@@ -128,6 +143,7 @@ class LibJitsiService extends ChangeNotifier {
   InAppWebViewController? _controller;
   LibJitsiState _currentState = const LibJitsiState();
   MeetingConfig? _pendingConfig;
+  String? _pendingVideoSource; // Queued video source to set after initialization
 
   // WebSocket server for fast binary frame transfer
   final FrameWebSocketServer _wsServer = FrameWebSocketServer();
@@ -156,6 +172,8 @@ class LibJitsiService extends ChangeNotifier {
   /// Set the WebView controller (called from widget)
   void setController(InAppWebViewController controller) {
     _controller = controller;
+    // Reset initialized state - new WebView means new JS context
+    _updateState(_currentState.copyWith(isInitialized: false));
     _setupJavaScriptHandlers(controller);
 
     // Start WebSocket server early so JS can connect when it initializes
@@ -180,7 +198,7 @@ class LibJitsiService extends ChangeNotifier {
     );
   }
 
-  void _handleJitsiEvent(String event, String dataJson) {
+  Future<void> _handleJitsiEvent(String event, String dataJson) async {
     debugPrint('LibJitsiService: event=$event, data=$dataJson');
 
     Map<String, dynamic> data = {};
@@ -190,6 +208,14 @@ class LibJitsiService extends ChangeNotifier {
 
     switch (event) {
       case 'initialized':
+        // Handle pending operations FIRST, before setting isInitialized
+        // This prevents a race where joinMeeting() sees isInitialized=true
+        // but camera acquisition is still in progress
+        if (_pendingVideoSource != null) {
+          await _setVideoSourceInternal(_pendingVideoSource!);
+          _pendingVideoSource = null;
+        }
+        // NOW set initialized (after camera is ready)
         _updateState(_currentState.copyWith(isInitialized: true));
         // If we have a pending config, join now
         if (_pendingConfig != null) {
@@ -355,6 +381,55 @@ class LibJitsiService extends ChangeNotifier {
     await _controller?.evaluateJavascript(
       source: 'setResolution($width, $height)',
     );
+  }
+
+  /// Set video source mode in WebView
+  /// For camera modes ('frontCamera', 'backCamera'), uses getUserMedia directly
+  /// For glasses mode, uses canvas captureStream
+  Future<bool> setVideoSource(String source) async {
+    if (_controller == null) return false;
+
+    // If not initialized yet, queue the request
+    if (!_currentState.isInitialized) {
+      debugPrint('LibJitsiService: WebView not initialized, queuing setVideoSource($source)');
+      _pendingVideoSource = source;
+      return true; // Will be set when initialized
+    }
+
+    return await _setVideoSourceInternal(source);
+  }
+
+  /// Internal method to actually call JavaScript setVideoSource
+  Future<bool> _setVideoSourceInternal(String source) async {
+    if (_controller == null) return false;
+
+    try {
+      // Wrap in an async IIFE to ensure the Promise is awaited
+      final result = await _controller?.evaluateJavascript(
+        source: '''
+          (async function() {
+            try {
+              const success = await setVideoSource("$source");
+              return success;
+            } catch (e) {
+              console.error('[JitsiBridge] setVideoSource error:', e);
+              return false;
+            }
+          })()
+        ''',
+      );
+      debugPrint('LibJitsiService: setVideoSource($source) result: $result');
+      return result == true || result == 'true';
+    } catch (e) {
+      debugPrint('LibJitsiService: setVideoSource error: $e');
+      return false;
+    }
+  }
+
+  /// Check if using direct camera mode (getUserMedia) vs canvas mode
+  bool get isUsingDirectCamera {
+    // This would need to query JS, but for now we track it locally
+    return false; // TODO: implement proper tracking
   }
 
   /// Toggle audio mute
