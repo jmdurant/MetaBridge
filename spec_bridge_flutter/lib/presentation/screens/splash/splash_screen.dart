@@ -2,8 +2,21 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import '../../../data/models/meeting_config.dart';
 import '../../../services/deep_link_service.dart';
 import '../../../services/glasses_service.dart';
+import '../../../services/settings_service.dart';
+
+/// Launch configuration from dart-defines
+///
+/// Usage:
+///   flutter run --dart-define=AUTO_STREAM=true --dart-define=DEFAULT_ROOM=myroom
+///
+/// Server and display name are read from app settings (configured in Settings screen)
+class LaunchConfig {
+  static const autoStream = bool.fromEnvironment('AUTO_STREAM', defaultValue: false);
+  static const defaultRoom = String.fromEnvironment('DEFAULT_ROOM', defaultValue: 'specbridge-test');
+}
 
 /// Splash screen shown during app initialization
 class SplashScreen extends StatefulWidget {
@@ -39,6 +52,17 @@ class _SplashScreenState extends State<SplashScreen> {
       final url = deepLinkService.initialLink!;
       await glassesService.handleMetaViewCallback(url);
       context.go('/setup');
+    } else if (LaunchConfig.autoStream) {
+      // Auto-stream mode from dart-define - go directly to streaming
+      // Use configured settings for server and display name
+      final settings = context.read<SettingsService>().settings;
+      debugPrint('LaunchConfig: Auto-streaming to ${LaunchConfig.defaultRoom} on ${settings.defaultServer}');
+      final config = MeetingConfig(
+        roomName: LaunchConfig.defaultRoom,
+        serverUrl: settings.defaultServer,
+        displayName: settings.displayName ?? 'SpecBridge User',
+      );
+      context.go('/streaming', extra: config);
     } else {
       // Normal startup
       context.go('/setup');

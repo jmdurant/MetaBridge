@@ -72,6 +72,12 @@ class _StatsOverlayState extends State<StatsOverlay> {
     Map<String, dynamic> nativeStats = {};
     if (widget.nativeChannel != null) {
       nativeStats = await widget.nativeChannel!.getStreamStats();
+
+      // Add Flutter EventChannel reception stats
+      if (widget.nativeChannel is MetaDATChannelImpl) {
+        final impl = widget.nativeChannel as MetaDATChannelImpl;
+        nativeStats.addAll(impl.frameReceptionStats);
+      }
     }
 
     if (mounted) {
@@ -104,10 +110,19 @@ class _StatsOverlayState extends State<StatsOverlay> {
     final memUsed = _nativeStats['memoryUsedMB'] ?? 0;
     final memMax = _nativeStats['memoryMaxMB'] ?? 0;
 
+    // Extract EventChannel stats (frames received by Flutter from native)
+    final flutterReceived = _nativeStats['framesReceivedFromNative'] ?? 0;
+    final eventChannelFps = _nativeStats['avgFps'] ?? 0;
+
     // Extract Flutter stats
     final flutterSent = _flutterStats['framesSent'] ?? 0;
     final flutterDropped = _flutterStats['framesDropped'] ?? 0;
     final flutterDropRate = _flutterStats['dropRate'] ?? 0;
+
+    // Calculate EventChannel loss
+    final eventChannelLoss = nativeProcessed > 0
+        ? ((nativeProcessed - flutterReceived) * 100 / nativeProcessed).round()
+        : 0;
 
     return Positioned(
       top: 60,
@@ -126,11 +141,17 @@ class _StatsOverlayState extends State<StatsOverlay> {
             _buildSectionHeader('PIPELINE STATS'),
             const SizedBox(height: 4),
 
-            // Native (Glasses -> JPEG)
-            _buildSectionLabel('Native (Encode)'),
+            // Native (Glasses -> I420)
+            _buildSectionLabel('Native (I420)'),
             _buildStatRow('Recv/Proc/Skip', '$nativeReceived/$nativeProcessed/$nativeSkipped'),
             _buildStatRow('Skip Rate', '$nativeSkipRate%'),
-            _buildStatRow('Encode Time', '${encodeTimeMs}ms (avg ${avgEncodeMs}ms)'),
+            _buildStatRow('Process Time', '${encodeTimeMs}ms (avg ${avgEncodeMs}ms)'),
+            const SizedBox(height: 6),
+
+            // EventChannel (Native -> Flutter)
+            _buildSectionLabel('EventChannel'),
+            _buildStatRow('Received', '$flutterReceived @ ${eventChannelFps}fps'),
+            _buildStatRow('Loss', '$eventChannelLoss% (vs nativeProc)'),
             const SizedBox(height: 6),
 
             // Flutter (WebSocket to WebView)

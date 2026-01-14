@@ -218,19 +218,10 @@ class MetaWearablesPlugin(
         // Initialize stream session manager for glasses
         streamManager = StreamSessionManager(activity, manager)
 
-        // Observe frames
-        scope.launch {
-            streamManager!!.frameFlow.collectLatest { frameData ->
-                // Note: frameData is now raw I420 with 8-byte header, not JPEG
-                // FloatingPreviewService expects JPEG, so skip it for now
-                // TODO: Re-enable when screen share is implemented with I420 support
-                // if (FloatingPreviewService.isRunning()) {
-                //     FloatingPreviewService.updateFrame(frameData)
-                // }
-
-                // Send all frames to Flutter - WebSocket can handle the throughput
-                sendFrame(frameData)
-            }
+        // Use direct callback for lowest latency - bypasses SharedFlow
+        streamManager!!.onFrameReady = { frameData ->
+            // Send all frames to Flutter - WebSocket can handle the throughput
+            sendFrame(frameData)
         }
 
         // Observe stream status

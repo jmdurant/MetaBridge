@@ -44,7 +44,12 @@ class StreamSessionManager(
     private var videoJob: Job? = null
     private var stateJob: Job? = null
 
-    private val _frameFlow = MutableSharedFlow<ByteArray>(extraBufferCapacity = 1)
+    // Buffer capacity of 3 to allow some slack in the pipeline (glasses send 24fps)
+    // Direct callback for frames - bypasses SharedFlow for lower latency
+    var onFrameReady: ((ByteArray) -> Unit)? = null
+
+    // SharedFlow kept for backwards compatibility but not used when onFrameReady is set
+    private val _frameFlow = MutableSharedFlow<ByteArray>(extraBufferCapacity = 3)
     val frameFlow: SharedFlow<ByteArray> = _frameFlow.asSharedFlow()
 
     private val _statusFlow = MutableStateFlow("stopped")
@@ -225,11 +230,28 @@ class StreamSessionManager(
             // Copy I420 data after header
             frameBuffer!!.copyInto(outputBuffer!!, 8, 0, expectedSize)
 
-            // Emit the raw frame with header
-            _frameFlow.tryEmit(outputBuffer!!.copyOf(outputSize))
+            // Send the raw frame with header
+            val frameData = outputBuffer!!.copyOf(outputSize)
 
-            // Track processing time (should be minimal now - no encoding!)
-            framesProcessed++
+            // Use direct callback if available (bypasses SharedFlow)
+            val callback = onFrameReady
+            if (callback != null) {
+                callback(frameData)
+                framesProcessed++
+            } else {
+                // Fall back to SharedFlow
+                val emitted = _frameFlow.tryEmit(frameData)
+                if (emitted) {
+                    framesProcessed++
+                } else {
+                    framesSkipped++
+                    if (framesSkipped == 1L || framesSkipped % 50 == 0L) {
+                        android.util.Log.w("StreamSessionManager", "SharedFlow buffer full! Dropped $framesSkipped frames total (tryEmit=false)")
+                    }
+                }
+            }
+
+            // Track processing time
             lastEncodeTimeMs = System.currentTimeMillis() - processStartTime
             totalEncodeTimeMs += lastEncodeTimeMs
         } catch (e: Exception) {

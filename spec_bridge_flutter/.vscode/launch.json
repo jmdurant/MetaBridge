@@ -1,0 +1,45 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug",
+      "request": "launch",
+      "type": "dart",
+      "program": "lib/main.dart"
+    },
+    {
+      "name": "Debug (Auto-Stream)",
+      "request": "launch",
+      "type": "dart",
+      "program": "lib/main.dart",
+      "args": [
+        "--dart-define=AUTO_STREAM=true"
+      ]
+    },
+    {
+      "name": "Debug (Auto-Stream Custom Room)",
+      "request": "launch",
+      "type": "dart",
+      "program": "lib/main.dart",
+      "args": [
+        "--dart-define=AUTO_STREAM=true",
+        "--dart-define=DEFAULT_ROOM=${input:roomName}"
+      ]
+    },
+    {
+      "name": "Release",
+      "request": "launch",
+      "type": "dart",
+      "program": "lib/main.dart",
+      "flutterMode": "release"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "roomName",
+      "type": "promptString",
+      "description": "Enter room name for auto-stream",
+      "default": "specbridge-test"
+    }
+  ]
+}

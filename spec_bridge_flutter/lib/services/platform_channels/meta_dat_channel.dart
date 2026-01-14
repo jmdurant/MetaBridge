@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../../data/models/glasses_state.dart';
@@ -97,6 +98,27 @@ class MetaDATChannelImpl implements MetaDATChannel {
   StreamSubscription? _eventSubscription;
   StreamSubscription? _frameSubscription;
 
+  // Frame reception tracking
+  int _framesReceivedFromNative = 0;
+  DateTime? _firstFrameTime;
+  DateTime? _lastFrameTime;
+
+  /// Stats about frames received from native side
+  Map<String, dynamic> get frameReceptionStats {
+    final now = DateTime.now();
+    final elapsed = _firstFrameTime != null
+        ? now.difference(_firstFrameTime!).inMilliseconds
+        : 0;
+    final avgFps = elapsed > 0
+        ? (_framesReceivedFromNative * 1000 / elapsed).round()
+        : 0;
+    return {
+      'framesReceivedFromNative': _framesReceivedFromNative,
+      'avgFps': avgFps,
+      'elapsedMs': elapsed,
+    };
+  }
+
   MetaDATChannelImpl() {
     _setupEventListeners();
   }
@@ -135,6 +157,20 @@ class MetaDATChannelImpl implements MetaDATChannel {
 
   void _handleFrame(dynamic data) {
     if (data is Uint8List) {
+      _framesReceivedFromNative++;
+      final now = DateTime.now();
+      _firstFrameTime ??= now;
+      _lastFrameTime = now;
+
+      // Log first frame and every 100 frames
+      if (_framesReceivedFromNative == 1) {
+        debugPrint('MetaDATChannel: First frame received from native (${data.length} bytes)');
+      }
+      if (_framesReceivedFromNative % 100 == 0) {
+        final stats = frameReceptionStats;
+        debugPrint('MetaDATChannel: Frames received=$_framesReceivedFromNative, avgFps=${stats['avgFps']}');
+      }
+
       _frameController.add(data);
       _eventController.add(FramePreviewEvent(data));
     }

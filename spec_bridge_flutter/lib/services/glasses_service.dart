@@ -51,7 +51,14 @@ class GlassesService extends ChangeNotifier {
 
   /// Automatically request camera permission when glasses connect
   Future<void> _autoRequestCameraPermission() async {
-    debugPrint('GlassesService: Auto-requesting camera permission after connection');
+    // Check if already granted first - permission persists across sessions
+    final currentStatus = await checkCameraPermission();
+    if (currentStatus == GlassesPermissionStatus.granted) {
+      debugPrint('GlassesService: Camera permission already granted');
+      return;
+    }
+
+    debugPrint('GlassesService: Requesting camera permission after connection');
     await requestCameraPermission();
   }
 
