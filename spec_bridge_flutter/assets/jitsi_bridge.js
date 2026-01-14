@@ -44,6 +44,10 @@ let e2eeConfig = { enabled: false, passphrase: '' };
 let remoteParticipantCount = 0;
 let videoTrackStarted = false;
 
+// Session watcher intervals (cleared on leave)
+let jvbCheckInterval = null;
+let p2pCheckInterval = null;
+
 // Video source mode: 'canvas' (for glasses) or 'camera' (direct getUserMedia)
 let videoSourceMode = 'canvas';
 let cameraStream = null;  // getUserMedia stream for camera mode
@@ -859,6 +863,35 @@ async function onConnectionEstablished(room, displayName) {
     await startVideoTrack();
     console.log('[JitsiBridge] Video track created');
 
+    // Watch for JVB session creation - this is key for video transmission
+    // Clear any existing intervals first
+    if (jvbCheckInterval) clearInterval(jvbCheckInterval);
+    if (p2pCheckInterval) clearInterval(p2pCheckInterval);
+
+    jvbCheckInterval = setInterval(() => {
+      if (conference && conference.jvbJingleSession) {
+        console.log('[JitsiBridge] >>> JVB SESSION CREATED <<<');
+        console.log('[JitsiBridge] JVB peerconnection:', !!conference.jvbJingleSession.peerconnection);
+        clearInterval(jvbCheckInterval);
+        jvbCheckInterval = null;
+      }
+    }, 500);
+
+    // Also watch for P2P session
+    p2pCheckInterval = setInterval(() => {
+      if (conference && conference.p2pJingleSession) {
+        console.log('[JitsiBridge] >>> P2P SESSION CREATED <<<');
+        clearInterval(p2pCheckInterval);
+        p2pCheckInterval = null;
+      }
+    }, 500);
+
+    // Clear intervals after 30s to avoid memory leak
+    setTimeout(() => {
+      if (jvbCheckInterval) { clearInterval(jvbCheckInterval); jvbCheckInterval = null; }
+      if (p2pCheckInterval) { clearInterval(p2pCheckInterval); p2pCheckInterval = null; }
+    }, 30000);
+
     // Conference event listeners
     conference.on(JitsiMeetJS.events.conference.CONFERENCE_JOINED, async () => {
       isJoined = true;
@@ -916,7 +949,10 @@ async function onConnectionEstablished(room, displayName) {
 
     conference.on(JitsiMeetJS.events.conference.USER_JOINED, (id, user) => {
       remoteParticipantCount++;
-      console.log('[JitsiBridge] Peer joined, count:', remoteParticipantCount);
+      console.log('[JitsiBridge] === USER_JOINED ===');
+      console.log('[JitsiBridge] Peer joined, count:', remoteParticipantCount, 'id:', id);
+      console.log('[JitsiBridge] At USER_JOINED - jvbJingleSession:', !!conference.jvbJingleSession);
+      console.log('[JitsiBridge] At USER_JOINED - p2pJingleSession:', !!conference.p2pJingleSession);
       notifyFlutter('participantJoined', {
         id: id,
         displayName: user.getDisplayName() || 'Guest'
@@ -931,6 +967,9 @@ async function onConnectionEstablished(room, displayName) {
 
     conference.on(JitsiMeetJS.events.conference.TRACK_ADDED, (track) => {
       if (track.isLocal()) return;
+      console.log('[JitsiBridge] === REMOTE TRACK_ADDED ===');
+      console.log('[JitsiBridge] Remote track type:', track.getType(), 'from:', track.getParticipantId());
+      console.log('[JitsiBridge] At TRACK_ADDED - jvbJingleSession:', !!conference.jvbJingleSession);
       notifyFlutter('remoteTrackAdded', {
         participantId: track.getParticipantId(),
         type: track.getType()
@@ -1134,36 +1173,76 @@ function isE2EE() {
 }
 
 // Leave the room
-function leaveRoom() {
+async function leaveRoom() {
   updateStatus('Leaving room...');
+  console.log('[JitsiBridge] === LEAVE ROOM START ===');
 
   try {
+    // Clear session watcher intervals first
+    if (jvbCheckInterval) {
+      clearInterval(jvbCheckInterval);
+      jvbCheckInterval = null;
+      console.log('[JitsiBridge] Cleared JVB check interval');
+    }
+    if (p2pCheckInterval) {
+      clearInterval(p2pCheckInterval);
+      p2pCheckInterval = null;
+      console.log('[JitsiBridge] Cleared P2P check interval');
+    }
+
+    // Dispose tracks before leaving conference
     if (localAudioTrack) {
+      console.log('[JitsiBridge] Disposing audio track');
       localAudioTrack.dispose();
       localAudioTrack = null;
     }
     if (localVideoTrack) {
+      console.log('[JitsiBridge] Disposing video track');
       localVideoTrack.dispose();
       localVideoTrack = null;
     }
+
+    // Leave conference and wait for it to complete
     if (conference) {
-      conference.leave();
+      console.log('[JitsiBridge] Leaving conference...');
+      try {
+        await conference.leave();
+        console.log('[JitsiBridge] Conference left successfully');
+      } catch (leaveErr) {
+        console.warn('[JitsiBridge] Conference leave error (non-fatal):', leaveErr);
+      }
       conference = null;
     }
+
+    // Disconnect connection and wait for it to complete
     if (connection) {
-      connection.disconnect();
+      console.log('[JitsiBridge] Disconnecting...');
+      try {
+        connection.disconnect();
+        console.log('[JitsiBridge] Connection disconnected');
+      } catch (disconnectErr) {
+        console.warn('[JitsiBridge] Disconnect error (non-fatal):', disconnectErr);
+      }
       connection = null;
     }
 
+    // Reset all state
     isJoined = false;
     isE2EEEnabled = false;
-    canvasStream = null;
     e2eeConfig = { enabled: false, passphrase: '' };
     remoteParticipantCount = 0;
     videoTrackStarted = false;
 
-    // Clean up camera preview
+    // Stop canvas stream if exists
+    if (canvasStream) {
+      console.log('[JitsiBridge] Stopping canvas stream tracks');
+      canvasStream.getTracks().forEach(track => track.stop());
+      canvasStream = null;
+    }
+
+    // Clean up camera stream and preview
     if (cameraStream) {
+      console.log('[JitsiBridge] Stopping camera stream tracks');
       cameraStream.getTracks().forEach(track => track.stop());
       cameraStream = null;
     }
@@ -1173,10 +1252,12 @@ function leaveRoom() {
     }
     videoSourceMode = 'canvas';
 
+    console.log('[JitsiBridge] === LEAVE ROOM COMPLETE ===');
     updateStatus('Left room');
     notifyFlutter('left', {});
   } catch (e) {
     console.error('[JitsiBridge] Leave error:', e);
+    notifyFlutter('left', { error: e.message });
   }
 }
 

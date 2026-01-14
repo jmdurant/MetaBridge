@@ -322,9 +322,27 @@ class LibJitsiService extends ChangeNotifier {
 
   /// Leave the current meeting
   Future<void> leaveMeeting() async {
-    await _controller?.evaluateJavascript(source: 'leaveRoom()');
+    debugPrint('LibJitsiService: Leaving meeting...');
+
+    // Call JS leaveRoom and wait a moment for async cleanup
+    try {
+      await _controller?.evaluateJavascript(source: 'leaveRoom()');
+      // Give JS time to complete async cleanup (conference.leave() is async)
+      await Future.delayed(const Duration(milliseconds: 500));
+    } catch (e) {
+      debugPrint('LibJitsiService: Error during leave: $e');
+    }
+
     await _wsServer.stop();
+
+    // Reset all pending state
     _pendingConfig = null;
+    _pendingVideoSource = null;
+
+    // Reset state to clean slate
+    _updateState(const LibJitsiState());
+
+    debugPrint('LibJitsiService: Left meeting, state reset');
   }
 
   // Frame counter for debug logging
