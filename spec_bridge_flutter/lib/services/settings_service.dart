@@ -11,8 +11,13 @@ class SettingsService extends ChangeNotifier {
   static const _keyDefaultAudioOutput = 'default_audio_output';
   static const _keyDefaultVideoQuality = 'default_video_quality';
   static const _keyUseNativeFrameServer = 'use_native_frame_server';
+  static const _keyGlassesCameraPermissionGranted = 'glasses_camera_permission_granted';
 
   AppSettings _settings = const AppSettings();
+  bool _glassesCameraPermissionGranted = false;
+
+  /// Whether the Meta glasses camera permission has been granted (persisted)
+  bool get glassesCameraPermissionGranted => _glassesCameraPermissionGranted;
 
   AppSettings get settings => _settings;
 
@@ -48,6 +53,9 @@ class SettingsService extends ChangeNotifier {
       defaultVideoQuality: videoQuality,
       useNativeFrameServer: prefs.getBool(_keyUseNativeFrameServer) ?? true,
     );
+
+    // Load glasses camera permission (persisted across sessions)
+    _glassesCameraPermissionGranted = prefs.getBool(_keyGlassesCameraPermissionGranted) ?? false;
 
     notifyListeners();
   }
@@ -102,6 +110,14 @@ class SettingsService extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_keyUseNativeFrameServer, use);
     _settings = _settings.copyWith(useNativeFrameServer: use);
+    notifyListeners();
+  }
+
+  /// Save glasses camera permission status (persists across app restarts)
+  Future<void> setGlassesCameraPermissionGranted(bool granted) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyGlassesCameraPermissionGranted, granted);
+    _glassesCameraPermissionGranted = granted;
     notifyListeners();
   }
 }

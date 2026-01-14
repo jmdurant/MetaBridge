@@ -29,15 +29,10 @@ class GlassesService extends ChangeNotifier {
     _eventSubscription = _channel.eventStream.listen((event) {
       switch (event) {
         case ConnectionStateEvent():
-          final wasConnected = _currentState.isConnected;
           _updateState(_currentState.copyWith(
             connection: event.state,
             errorMessage: event.errorMessage,
           ));
-          // Auto-request camera permission when glasses connect
-          if (!wasConnected && event.state == GlassesConnectionState.connected) {
-            _autoRequestCameraPermission();
-          }
           break;
         case StreamStatusEvent():
           // Stream status is handled by StreamService
@@ -47,19 +42,6 @@ class GlassesService extends ChangeNotifier {
           break;
       }
     });
-  }
-
-  /// Automatically request camera permission when glasses connect
-  Future<void> _autoRequestCameraPermission() async {
-    // Check if already granted first - permission persists across sessions
-    final currentStatus = await checkCameraPermission();
-    if (currentStatus == GlassesPermissionStatus.granted) {
-      debugPrint('GlassesService: Camera permission already granted');
-      return;
-    }
-
-    debugPrint('GlassesService: Requesting camera permission after connection');
-    await requestCameraPermission();
   }
 
   void _updateState(GlassesState newState) {

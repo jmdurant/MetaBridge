@@ -2,10 +2,44 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../../data/models/app_settings.dart';
+import '../../../services/permission_service.dart';
 import '../../../services/settings_service.dart';
 
-class SettingsScreen extends StatelessWidget {
+class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  bool _permissionsGranted = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkPermissions();
+  }
+
+  Future<void> _checkPermissions() async {
+    final permissionService = context.read<PermissionService>();
+    final granted = await permissionService.checkAllPermissions();
+    if (mounted) {
+      setState(() => _permissionsGranted = granted);
+    }
+  }
+
+  Future<void> _requestPermissions() async {
+    final permissionService = context.read<PermissionService>();
+    final granted = await permissionService.requestAllPermissions();
+    if (mounted) {
+      setState(() => _permissionsGranted = granted);
+    }
+  }
+
+  void _openSettings() {
+    context.read<PermissionService>().openSettings();
+  }
 
   String _videoQualityLabel(VideoQuality quality) {
     switch (quality) {
@@ -127,6 +161,38 @@ class SettingsScreen extends StatelessWidget {
 
           return ListView(
             children: [
+              const _SectionHeader('Permissions'),
+              ListTile(
+                leading: Icon(
+                  _permissionsGranted ? Icons.check_circle : Icons.warning,
+                  color: _permissionsGranted ? Colors.green : Colors.orange,
+                ),
+                title: Text(
+                  _permissionsGranted
+                      ? 'All permissions granted'
+                      : 'Some permissions missing',
+                ),
+                subtitle: Text(
+                  _permissionsGranted
+                      ? 'Camera, microphone, and Bluetooth access enabled'
+                      : 'Tap to grant required permissions',
+                ),
+                trailing: _permissionsGranted
+                    ? null
+                    : const Icon(Icons.chevron_right),
+                onTap: _permissionsGranted ? null : _requestPermissions,
+              ),
+              if (!_permissionsGranted)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: TextButton.icon(
+                    onPressed: _openSettings,
+                    icon: const Icon(Icons.settings, size: 18),
+                    label: const Text('Open System Settings'),
+                  ),
+                ),
+              const SizedBox(height: 8),
+              const Divider(),
               const _SectionHeader('Default Server'),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),

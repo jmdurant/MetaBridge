@@ -7,7 +7,6 @@ import '../../../data/models/app_settings.dart';
 import '../../../data/models/glasses_state.dart';
 import '../../../data/models/meeting_config.dart';
 import '../../../services/glasses_service.dart';
-import '../../../services/permission_service.dart';
 import '../../../services/settings_service.dart';
 
 /// Setup screen for glasses connection and meeting configuration
@@ -24,17 +23,12 @@ class _SetupScreenState extends State<SetupScreen> {
   final _e2eePassphraseController = TextEditingController();
 
   bool _isConnecting = false;
-  bool _permissionsGranted = false;
   bool _enableE2EE = false;
 
   @override
   void initState() {
     super.initState();
     _loadSettings();
-    // Auto-request permissions on open
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _requestPermissions();
-    });
   }
 
   void _loadSettings() {
@@ -49,18 +43,6 @@ class _SetupScreenState extends State<SetupScreen> {
     _nameController.dispose();
     _e2eePassphraseController.dispose();
     super.dispose();
-  }
-
-  Future<void> _requestPermissions() async {
-    final permissionService = context.read<PermissionService>();
-    final granted = await permissionService.requestAllPermissions();
-    if (mounted) {
-      setState(() => _permissionsGranted = granted);
-    }
-  }
-
-  void _openSettings() {
-    context.read<PermissionService>().openSettings();
   }
 
   Future<void> _connectGlasses() async {
@@ -102,7 +84,7 @@ class _SetupScreenState extends State<SetupScreen> {
     }
   }
 
-  void _startStreaming() {
+  Future<void> _startStreaming() async {
     if (_roomController.text.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please enter a room name')),
@@ -118,7 +100,40 @@ class _SetupScreenState extends State<SetupScreen> {
       return;
     }
 
-    final settings = context.read<SettingsService>().settings;
+    // Check glasses camera permission if glasses is selected
+    final glassesService = context.read<GlassesService>();
+    final settingsService = context.read<SettingsService>();
+
+    if (glassesService.videoSource == VideoSource.glasses) {
+      // Check if we already have permission saved locally
+      if (!settingsService.glassesCameraPermissionGranted) {
+        debugPrint('SetupScreen: Glasses camera permission not saved, requesting...');
+
+        // Request permission from SDK
+        final status = await glassesService.requestCameraPermission();
+
+        if (status == GlassesPermissionStatus.granted) {
+          // Save permission to persist across sessions
+          await settingsService.setGlassesCameraPermissionGranted(true);
+          debugPrint('SetupScreen: Glasses camera permission granted and saved');
+        } else {
+          // Permission denied, show error and don't proceed
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Camera permission required to stream from glasses'),
+                duration: Duration(seconds: 3),
+              ),
+            );
+          }
+          return;
+        }
+      } else {
+        debugPrint('SetupScreen: Glasses camera permission already saved');
+      }
+    }
+
+    final settings = settingsService.settings;
     final displayName = _nameController.text.trim();
     final config = MeetingConfig(
       roomName: _roomController.text.trim(),
@@ -128,7 +143,9 @@ class _SetupScreenState extends State<SetupScreen> {
       e2eePassphrase: _enableE2EE ? _e2eePassphraseController.text.trim() : null,
     );
 
-    context.go('/streaming', extra: config);
+    if (mounted) {
+      context.go('/streaming', extra: config);
+    }
   }
 
   @override
@@ -148,13 +165,6 @@ class _SetupScreenState extends State<SetupScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Permissions Section
-            _buildSection(
-              title: 'Permissions',
-              child: _buildPermissionsCard(),
-            ),
-            const SizedBox(height: 24),
-
             // Video Source Section
             _buildSection(
               title: 'Video Source',
@@ -236,36 +246,6 @@ class _SetupScreenState extends State<SetupScreen> {
         const SizedBox(height: 8),
         child,
       ],
-    );
-  }
-
-  Widget _buildPermissionsCard() {
-    return Card(
-      child: InkWell(
-        onTap: _permissionsGranted ? null : _openSettings,
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Row(
-            children: [
-              Icon(
-                _permissionsGranted ? Icons.check_circle : Icons.warning,
-                color: _permissionsGranted ? Colors.green : Colors.orange,
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Text(
-                  _permissionsGranted
-                      ? 'All permissions granted'
-                      : 'Tap to open Settings and grant permissions',
-                ),
-              ),
-              if (!_permissionsGranted)
-                const Icon(Icons.open_in_new, size: 18, color: Colors.grey),
-            ],
-          ),
-        ),
-      ),
     );
   }
 
@@ -465,13 +445,6 @@ class _SetupScreenState extends State<SetupScreen> {
                     'Front Camera',
                     'Use phone\'s front camera',
                   ),
-                  _buildVideoSourceOption(
-                    glassesService,
-                    VideoSource.screenShare,
-                    Icons.screen_share,
-                    'Screen Share',
-                    'Share your screen via Jitsi',
-                  ),
                 ],
               ),
             ),
@@ -512,7 +485,8 @@ class _SetupScreenState extends State<SetupScreen> {
 
   Widget _buildStartButton(GlassesState state) {
     // Use the isReady getter which handles different video sources
-    final isReady = state.isReady && _permissionsGranted;
+    // Permissions are now handled: Android perms in Settings, Meta glasses perms on button press
+    final isReady = state.isReady;
 
     String buttonLabel;
     switch (state.videoSource) {
@@ -526,7 +500,8 @@ class _SetupScreenState extends State<SetupScreen> {
         buttonLabel = 'Start Streaming (Front Camera)';
         break;
       case VideoSource.screenShare:
-        buttonLabel = 'Start Streaming (Screen Share)';
+        // Not implemented yet, but keep case for enum exhaustiveness
+        buttonLabel = 'Start Streaming';
         break;
     }
 

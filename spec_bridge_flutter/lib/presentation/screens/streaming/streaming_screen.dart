@@ -578,26 +578,6 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
       );
     }
 
-    // Screen share mode - show status message
-    if (videoSource == VideoSource.screenShare) {
-      return Container(
-        color: Colors.black87,
-        child: const Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.screen_share, color: Colors.grey, size: 64),
-              SizedBox(height: 16),
-              Text(
-                'Screen share not yet implemented for lib-jitsi-meet',
-                style: TextStyle(color: Colors.grey, fontSize: 16),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
     // Normal streaming - WebView shows the video, no overlay needed
     return const SizedBox.shrink();
   }
@@ -613,8 +593,6 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
       child: ControlButtons(
         isAudioMuted: isAudioMuted,
         isVideoMuted: isVideoMuted,
-        isScreenSharing: false,
-        isScreenShareMode: videoSource == VideoSource.screenShare,
         currentSource: videoSource.name,
         onToggleAudio: () async {
           final streamService = context.read<StreamService>();
@@ -623,10 +601,6 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
         onToggleVideo: () async {
           final streamService = context.read<StreamService>();
           await streamService.toggleVideo();
-        },
-        onToggleScreenShare: () {
-          // Screen share not implemented for lib-jitsi-meet yet
-          debugPrint('Screen share not implemented for lib-jitsi-meet');
         },
         onSwitchSource: () => _showSourcePicker(videoSource),
         onEndCall: _stopStreaming,

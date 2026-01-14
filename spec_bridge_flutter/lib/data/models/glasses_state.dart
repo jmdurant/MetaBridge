@@ -44,10 +44,13 @@ class GlassesState extends Equatable {
   bool get hasPermission => cameraPermission == GlassesPermissionStatus.granted;
 
   /// Check if ready to stream based on video source
+  /// Note: For glasses, permission is requested on Start Streaming button press
   bool get isReady {
     switch (videoSource) {
       case VideoSource.glasses:
-        return isConnected && hasPermission && isConfigured;
+        // Only require connection and SDK configured
+        // Permission is handled when Start Streaming is pressed
+        return isConnected && isConfigured;
       case VideoSource.backCamera:
       case VideoSource.frontCamera:
       case VideoSource.screenShare:
