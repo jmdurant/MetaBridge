@@ -5,8 +5,11 @@ import '../data/models/app_settings.dart';
 
 class SettingsService extends ChangeNotifier {
   static const _keyDefaultServer = 'default_server';
+  static const _keyDefaultRoomName = 'default_room_name';
   static const _keyDisplayName = 'display_name';
   static const _keyShowPipelineStats = 'show_pipeline_stats';
+  static const _keyDefaultAudioOutput = 'default_audio_output';
+  static const _keyDefaultVideoQuality = 'default_video_quality';
 
   AppSettings _settings = const AppSettings();
 
@@ -15,12 +18,33 @@ class SettingsService extends ChangeNotifier {
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
 
+    // Parse audio output enum
+    final audioOutputStr = prefs.getString(_keyDefaultAudioOutput);
+    final audioOutput = audioOutputStr != null
+        ? AudioOutput.values.firstWhere(
+            (e) => e.name == audioOutputStr,
+            orElse: () => AudioOutput.phoneSpeaker,
+          )
+        : AudioOutput.phoneSpeaker;
+
+    // Parse video quality enum
+    final videoQualityStr = prefs.getString(_keyDefaultVideoQuality);
+    final videoQuality = videoQualityStr != null
+        ? VideoQuality.values.firstWhere(
+            (e) => e.name == videoQualityStr,
+            orElse: () => VideoQuality.medium,
+          )
+        : VideoQuality.medium;
+
     _settings = AppSettings(
       jitsiMode: JitsiMode.libJitsiMeet, // Only lib-jitsi-meet mode now
       // Use community server - meet.jit.si requires login to be moderator
       defaultServer: prefs.getString(_keyDefaultServer) ?? 'https://meet.ffmuc.net',
+      defaultRoomName: prefs.getString(_keyDefaultRoomName) ?? 'SpecBridgeRoom',
       displayName: prefs.getString(_keyDisplayName),
       showPipelineStats: prefs.getBool(_keyShowPipelineStats) ?? true,
+      defaultAudioOutput: audioOutput,
+      defaultVideoQuality: videoQuality,
     );
 
     notifyListeners();
@@ -30,6 +54,13 @@ class SettingsService extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_keyDefaultServer, server);
     _settings = _settings.copyWith(defaultServer: server);
+    notifyListeners();
+  }
+
+  Future<void> setDefaultRoomName(String roomName) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keyDefaultRoomName, roomName);
+    _settings = _settings.copyWith(defaultRoomName: roomName);
     notifyListeners();
   }
 
@@ -48,6 +79,20 @@ class SettingsService extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_keyShowPipelineStats, show);
     _settings = _settings.copyWith(showPipelineStats: show);
+    notifyListeners();
+  }
+
+  Future<void> setDefaultAudioOutput(AudioOutput output) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keyDefaultAudioOutput, output.name);
+    _settings = _settings.copyWith(defaultAudioOutput: output);
+    notifyListeners();
+  }
+
+  Future<void> setDefaultVideoQuality(VideoQuality quality) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keyDefaultVideoQuality, quality.name);
+    _settings = _settings.copyWith(defaultVideoQuality: quality);
     notifyListeners();
   }
 }

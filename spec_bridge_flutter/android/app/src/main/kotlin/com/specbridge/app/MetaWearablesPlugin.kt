@@ -53,7 +53,8 @@ class MetaWearablesPlugin(
                 val height = call.argument<Int>("height") ?: 720
                 val frameRate = call.argument<Int>("frameRate") ?: 24
                 val videoSource = call.argument<String>("videoSource") ?: "glasses"
-                startStreaming(width, height, frameRate, videoSource, result)
+                val videoQuality = call.argument<String>("videoQuality") ?: "medium"
+                startStreaming(width, height, frameRate, videoSource, videoQuality, result)
             }
             "stopStreaming" -> stopStreaming(result)
             "disconnect" -> disconnect(result)
@@ -177,7 +178,7 @@ class MetaWearablesPlugin(
     private var cameraManager: CameraCaptureManager? = null
     private var currentVideoSource: String = "glasses"
 
-    private fun startStreaming(width: Int, height: Int, frameRate: Int, videoSource: String, result: MethodChannel.Result) {
+    private fun startStreaming(width: Int, height: Int, frameRate: Int, videoSource: String, videoQuality: String, result: MethodChannel.Result) {
         currentVideoSource = videoSource
 
         scope.launch {
@@ -188,7 +189,7 @@ class MetaWearablesPlugin(
                 ))
 
                 when (videoSource) {
-                    "glasses" -> startGlassesStreaming(width, height, frameRate, result)
+                    "glasses" -> startGlassesStreaming(width, height, frameRate, videoQuality, result)
                     "backCamera" -> startCameraStreaming(width, height, frameRate, false, result)
                     "frontCamera" -> startCameraStreaming(width, height, frameRate, true, result)
                     "screenRecord" -> {
@@ -208,7 +209,7 @@ class MetaWearablesPlugin(
         }
     }
 
-    private suspend fun startGlassesStreaming(width: Int, height: Int, frameRate: Int, result: MethodChannel.Result) {
+    private suspend fun startGlassesStreaming(width: Int, height: Int, frameRate: Int, videoQuality: String, result: MethodChannel.Result) {
         val manager = wearablesManager
         if (manager == null) {
             result.error("NOT_CONFIGURED", "Call configure first for glasses streaming", null)
@@ -234,7 +235,7 @@ class MetaWearablesPlugin(
             }
         }
 
-        val success = streamManager!!.startStreaming(width, height, frameRate)
+        val success = streamManager!!.startStreaming(width, height, frameRate, videoQuality)
         if (success) {
             sendEvent(mapOf(
                 "type" to "streamStatus",
@@ -396,6 +397,7 @@ class MetaWearablesPlugin(
     }
 
     private fun sendFrame(data: ByteArray) {
+        // EventSink requires UI thread
         activity.runOnUiThread {
             frameSink?.success(data)
         }

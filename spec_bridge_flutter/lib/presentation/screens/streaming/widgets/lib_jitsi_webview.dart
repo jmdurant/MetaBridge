@@ -21,9 +21,6 @@ class LibJitsiWebView extends StatefulWidget {
 }
 
 class _LibJitsiWebViewState extends State<LibJitsiWebView> {
-  bool _isLoading = true;
-  String? _error;
-
   @override
   Widget build(BuildContext context) {
     // WebView fills parent and shows video preview
@@ -37,18 +34,12 @@ class _LibJitsiWebViewState extends State<LibJitsiWebView> {
             },
             onLoadStart: (controller, url) {
               debugPrint('LibJitsiWebView: Loading $url');
-              setState(() => _isLoading = true);
             },
             onLoadStop: (controller, url) {
               debugPrint('LibJitsiWebView: Load complete');
-              setState(() => _isLoading = false);
             },
-            onLoadError: (controller, url, code, message) {
-              debugPrint('LibJitsiWebView: Load error $code: $message');
-              setState(() {
-                _isLoading = false;
-                _error = message;
-              });
+            onReceivedError: (controller, request, error) {
+              debugPrint('LibJitsiWebView: Load error ${error.type}: ${error.description}');
             },
             onPermissionRequest: (controller, request) async {
               debugPrint('LibJitsiWebView: Permission request: ${request.resources}');

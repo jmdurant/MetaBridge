@@ -11,12 +11,14 @@ class StreamConfig {
   final int height;
   final int frameRate;
   final VideoSource videoSource;
+  final String videoQuality; // low, medium, high
 
   const StreamConfig({
     this.width = 1280,
     this.height = 720,
     this.frameRate = 24,
     this.videoSource = VideoSource.glasses,
+    this.videoQuality = 'medium',
   });
 
   Map<String, dynamic> toMap() => {
@@ -24,6 +26,7 @@ class StreamConfig {
         'height': height,
         'frameRate': frameRate,
         'videoSource': videoSource.name,
+        'videoQuality': videoQuality,
       };
 }
 
@@ -101,7 +104,6 @@ class MetaDATChannelImpl implements MetaDATChannel {
   // Frame reception tracking
   int _framesReceivedFromNative = 0;
   DateTime? _firstFrameTime;
-  DateTime? _lastFrameTime;
 
   /// Stats about frames received from native side
   Map<String, dynamic> get frameReceptionStats {
@@ -158,9 +160,7 @@ class MetaDATChannelImpl implements MetaDATChannel {
   void _handleFrame(dynamic data) {
     if (data is Uint8List) {
       _framesReceivedFromNative++;
-      final now = DateTime.now();
-      _firstFrameTime ??= now;
-      _lastFrameTime = now;
+      _firstFrameTime ??= DateTime.now();
 
       // Log first frame and every 100 frames
       if (_framesReceivedFromNative == 1) {

@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import '../../../data/models/app_settings.dart';
 import '../../../data/models/glasses_state.dart';
 import '../../../data/models/meeting_config.dart';
 import '../../../data/models/stream_status.dart';
@@ -125,7 +126,13 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
   Future<void> _startStreaming() async {
     try {
       final streamService = context.read<StreamService>();
-      await streamService.startStreaming(widget.config);
+      final settings = context.read<SettingsService>().settings;
+
+      await streamService.startStreaming(
+        widget.config,
+        audioOutput: settings.defaultAudioOutput,
+        videoQuality: settings.defaultVideoQuality,
+      );
       if (mounted) {
         setState(() => _isStarting = false);
       }
@@ -139,15 +146,61 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
     }
   }
 
+  void _showAudioOutputPicker() {
+    final streamService = context.read<StreamService>();
+    final currentOutput = streamService.currentAudioOutput;
+
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Padding(
+            padding: EdgeInsets.all(16),
+            child: Text(
+              'Audio Output',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+          ),
+          RadioGroup<AudioOutput>(
+            groupValue: currentOutput,
+            onChanged: (value) async {
+              if (value == null) return;
+              Navigator.pop(context);
+              await streamService.setAudioOutput(value);
+              if (mounted) setState(() {});
+            },
+            child: Column(
+              children: [
+                RadioListTile<AudioOutput>(
+                  title: const Text('Phone Speaker'),
+                  subtitle: const Text('Better video quality'),
+                  value: AudioOutput.phoneSpeaker,
+                ),
+                RadioListTile<AudioOutput>(
+                  title: const Text('Glasses'),
+                  subtitle: const Text('May reduce video frame rate'),
+                  value: AudioOutput.glasses,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
+      ),
+    );
+  }
+
   Future<void> _stopStreaming() async {
     _restoreSystemUI();
+
+    final streamService = context.read<StreamService>();
 
     // Stop background service if running
     if (_backgroundMode) {
       await BackgroundStreamingService.stopService();
     }
 
-    final streamService = context.read<StreamService>();
     await streamService.stopStreaming();
     if (mounted) {
       context.go('/setup');
@@ -338,6 +391,21 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
                     size: 20,
                   ),
                 ),
+              );
+            },
+          ),
+
+          // Audio output picker
+          Consumer<StreamService>(
+            builder: (context, streamService, _) {
+              final isGlassesAudio = streamService.currentAudioOutput == AudioOutput.glasses;
+              return IconButton(
+                icon: Icon(
+                  isGlassesAudio ? Icons.headphones : Icons.volume_up,
+                  color: Colors.white,
+                ),
+                onPressed: _showAudioOutputPicker,
+                tooltip: isGlassesAudio ? 'Audio: Glasses' : 'Audio: Speaker',
               );
             },
           ),

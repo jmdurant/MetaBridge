@@ -281,9 +281,9 @@ class LibJitsiService extends ChangeNotifier {
   }
 
   Future<void> _joinWithConfig(MeetingConfig config) async {
-    final server = config.serverUrl ?? 'https://meet.jit.si';
+    final server = config.serverUrl;
     final room = config.roomName;
-    final displayName = config.displayName ?? 'SpecBridge User';
+    final displayName = config.displayName;
     final enableE2EE = config.enableE2EE;
     final e2eePassphrase = config.e2eePassphrase ?? '';
 
@@ -303,7 +303,8 @@ class LibJitsiService extends ChangeNotifier {
 
   // Frame counter for debug logging
   int _frameSentCount = 0;
-  int _framesDropped = 0;
+  // Flutter side doesn't drop frames - WebSocket/JS layer handles frame pacing
+  final int _framesDropped = 0;
 
   /// Get Flutter-side frame stats
   Map<String, dynamic> getFlutterStats() {

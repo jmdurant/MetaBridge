@@ -10,12 +10,14 @@ import '../../../services/settings_service.dart';
 /// Launch configuration from dart-defines
 ///
 /// Usage:
-///   flutter run --dart-define=AUTO_STREAM=true --dart-define=DEFAULT_ROOM=myroom
+///   flutter run --dart-define=AUTO_STREAM=true
 ///
-/// Server and display name are read from app settings (configured in Settings screen)
+/// Room name, server, and display name are read from app settings (configured in Settings screen)
+/// Optionally override room with: --dart-define=DEFAULT_ROOM=myroom
 class LaunchConfig {
   static const autoStream = bool.fromEnvironment('AUTO_STREAM', defaultValue: false);
-  static const defaultRoom = String.fromEnvironment('DEFAULT_ROOM', defaultValue: 'specbridge-test');
+  // Empty string means use settings, otherwise override with dart-define value
+  static const roomOverride = String.fromEnvironment('DEFAULT_ROOM', defaultValue: '');
 }
 
 /// Splash screen shown during app initialization
@@ -36,10 +38,11 @@ class _SplashScreenState extends State<SplashScreen> {
   Future<void> _initialize() async {
     // Initialize glasses service
     final glassesService = context.read<GlassesService>();
+    final deepLinkService = context.read<DeepLinkService>();
+
     await glassesService.initialize();
 
     // Check for deep link meeting config
-    final deepLinkService = context.read<DeepLinkService>();
     final pendingConfig = deepLinkService.getPendingMeetingConfig();
 
     if (!mounted) return;
@@ -51,14 +54,18 @@ class _SplashScreenState extends State<SplashScreen> {
       // Returning from Meta View pairing
       final url = deepLinkService.initialLink!;
       await glassesService.handleMetaViewCallback(url);
+      if (!mounted) return;
       context.go('/setup');
     } else if (LaunchConfig.autoStream) {
       // Auto-stream mode from dart-define - go directly to streaming
-      // Use configured settings for server and display name
+      // Use configured settings (room can be overridden via dart-define)
       final settings = context.read<SettingsService>().settings;
-      debugPrint('LaunchConfig: Auto-streaming to ${LaunchConfig.defaultRoom} on ${settings.defaultServer}');
+      final roomName = LaunchConfig.roomOverride.isNotEmpty
+          ? LaunchConfig.roomOverride
+          : settings.defaultRoomName;
+      debugPrint('LaunchConfig: Auto-streaming to $roomName on ${settings.defaultServer}');
       final config = MeetingConfig(
-        roomName: LaunchConfig.defaultRoom,
+        roomName: roomName,
         serverUrl: settings.defaultServer,
         displayName: settings.displayName ?? 'SpecBridge User',
       );

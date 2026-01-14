@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 
@@ -96,30 +95,25 @@ class FrameWebSocketServer {
   }
 
   /// Send a frame to the connected client
-  /// Returns true if sent, false if dropped (no client or client busy)
-  bool sendFrame(Uint8List jpegData) {
+  void sendFrame(Uint8List frameData) {
     if (_client == null) {
       _framesDropped++;
-      return false;
+      return;
     }
 
     try {
-      // Send raw bytes - no base64 encoding needed!
-      _client!.add(jpegData);
+      _client!.add(frameData);
       _framesSent++;
 
       if (_framesSent == 1) {
-        debugPrint('FrameWebSocketServer: Sent first frame (${jpegData.length} bytes)');
+        debugPrint('FrameWebSocketServer: Sent first frame (${frameData.length} bytes)');
       }
       if (_framesSent % 100 == 0) {
         debugPrint('FrameWebSocketServer: Sent $_framesSent frames, dropped $_framesDropped');
       }
-
-      return true;
     } catch (e) {
       debugPrint('FrameWebSocketServer: Send error: $e');
       _framesDropped++;
-      return false;
     }
   }
 

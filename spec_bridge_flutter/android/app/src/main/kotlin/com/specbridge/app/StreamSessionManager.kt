@@ -82,8 +82,8 @@ class StreamSessionManager(
 
     // MARK: - Streaming Control
 
-    fun startStreaming(width: Int, height: Int, frameRate: Int): Boolean {
-        android.util.Log.d("StreamSessionManager", "startStreaming called: ${width}x${height} @ ${frameRate}fps")
+    fun startStreaming(width: Int, height: Int, frameRate: Int, videoQualityStr: String = "medium"): Boolean {
+        android.util.Log.d("StreamSessionManager", "startStreaming called: ${width}x${height} @ ${frameRate}fps, quality=$videoQualityStr")
 
         if (streamSession != null) {
             android.util.Log.w("StreamSessionManager", "Already streaming, returning false")
@@ -92,13 +92,13 @@ class StreamSessionManager(
 
         // Launch the streaming setup in a coroutine to allow waiting for device
         scope.launch {
-            startStreamingAsync(width, height, frameRate)
+            startStreamingAsync(width, height, frameRate, videoQualityStr)
         }
 
         return true // Return true immediately, actual status will be reported via statusFlow
     }
 
-    private suspend fun startStreamingAsync(width: Int, height: Int, frameRate: Int) {
+    private suspend fun startStreamingAsync(width: Int, height: Int, frameRate: Int, videoQualityStr: String) {
         try {
             _statusFlow.value = "starting"
             frameCount = 0
@@ -116,11 +116,14 @@ class StreamSessionManager(
             }
             android.util.Log.d("StreamSessionManager", "Active device found: $activeDevice")
 
-            // Use MEDIUM quality and 24fps like the official sample for reliability
-            // The official CameraAccess sample uses: VideoQuality.MEDIUM, 24
-            val quality = VideoQuality.MEDIUM
+            // Map quality string to Meta SDK VideoQuality enum
+            val quality = when (videoQualityStr.lowercase()) {
+                "low" -> VideoQuality.LOW
+                "high" -> VideoQuality.HIGH
+                else -> VideoQuality.MEDIUM
+            }
             val fps = 24
-            android.util.Log.d("StreamSessionManager", "Using video quality: $quality @ ${fps}fps (matching official sample)")
+            android.util.Log.d("StreamSessionManager", "Using video quality: $quality @ ${fps}fps")
 
             // Create stream session exactly like the official sample
             android.util.Log.d("StreamSessionManager", "Creating stream session...")
@@ -173,9 +176,11 @@ class StreamSessionManager(
 
     // MARK: - Frame Processing
 
-    // Reusable buffers to avoid allocations
+    // Reusable buffers to avoid allocations - double buffer for thread safety
     private var frameBuffer: ByteArray? = null
-    private var outputBuffer: ByteArray? = null
+    private var outputBuffer1: ByteArray? = null
+    private var outputBuffer2: ByteArray? = null
+    private var useBuffer1 = true
 
     // Frame rate limiting - process all frames, let JS drop if needed
     private var framesSkipped = 0L
@@ -217,21 +222,31 @@ class StreamSessionManager(
             buffer.position(originalPosition)
 
             // Create output buffer: 8-byte header + I420 data
+            // Use double buffering to avoid allocation every frame
             val outputSize = 8 + expectedSize
-            if (outputBuffer == null || outputBuffer!!.size < outputSize) {
-                outputBuffer = ByteArray(outputSize)
+            val outputBuffer = if (useBuffer1) {
+                if (outputBuffer1 == null || outputBuffer1!!.size < outputSize) {
+                    outputBuffer1 = ByteArray(outputSize)
+                }
+                outputBuffer1!!
+            } else {
+                if (outputBuffer2 == null || outputBuffer2!!.size < outputSize) {
+                    outputBuffer2 = ByteArray(outputSize)
+                }
+                outputBuffer2!!
             }
+            useBuffer1 = !useBuffer1  // Swap for next frame
 
             // Write header (width, height as little-endian uint32)
-            val headerBuffer = ByteBuffer.wrap(outputBuffer!!, 0, 8).order(ByteOrder.LITTLE_ENDIAN)
+            val headerBuffer = ByteBuffer.wrap(outputBuffer, 0, 8).order(ByteOrder.LITTLE_ENDIAN)
             headerBuffer.putInt(width)
             headerBuffer.putInt(height)
 
             // Copy I420 data after header
-            frameBuffer!!.copyInto(outputBuffer!!, 8, 0, expectedSize)
+            frameBuffer!!.copyInto(outputBuffer, 8, 0, expectedSize)
 
-            // Send the raw frame with header
-            val frameData = outputBuffer!!.copyOf(outputSize)
+            // Send the buffer directly - no copyOf()!
+            val frameData = outputBuffer
 
             // Use direct callback if available (bypasses SharedFlow)
             val callback = onFrameReady

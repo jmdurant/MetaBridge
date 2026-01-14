@@ -19,8 +19,8 @@ class SetupScreen extends StatefulWidget {
 }
 
 class _SetupScreenState extends State<SetupScreen> {
-  final _roomController = TextEditingController(text: 'SpecBridgeRoom');
-  final _nameController = TextEditingController(text: 'SpecBridge User');
+  final _roomController = TextEditingController();
+  final _nameController = TextEditingController();
   final _e2eePassphraseController = TextEditingController();
 
   bool _isConnecting = false;
@@ -39,9 +39,8 @@ class _SetupScreenState extends State<SetupScreen> {
 
   void _loadSettings() {
     final settings = context.read<SettingsService>().settings;
-    if (settings.displayName != null) {
-      _nameController.text = settings.displayName!;
-    }
+    _roomController.text = settings.defaultRoomName;
+    _nameController.text = settings.displayName ?? 'SpecBridge User';
   }
 
   @override
@@ -438,33 +437,43 @@ class _SetupScreenState extends State<SetupScreen> {
               style: TextStyle(fontSize: 14),
             ),
             const SizedBox(height: 12),
-            _buildVideoSourceOption(
-              glassesService,
-              VideoSource.glasses,
-              Icons.visibility,
-              'Meta Glasses',
-              'Stream from Ray-Ban Meta glasses',
-            ),
-            _buildVideoSourceOption(
-              glassesService,
-              VideoSource.backCamera,
-              Icons.camera_rear,
-              'Back Camera',
-              'Use phone\'s rear camera',
-            ),
-            _buildVideoSourceOption(
-              glassesService,
-              VideoSource.frontCamera,
-              Icons.camera_front,
-              'Front Camera',
-              'Use phone\'s front camera',
-            ),
-            _buildVideoSourceOption(
-              glassesService,
-              VideoSource.screenShare,
-              Icons.screen_share,
-              'Screen Share',
-              'Share your screen via Jitsi',
+            RadioGroup<VideoSource>(
+              groupValue: glassesService.videoSource,
+              onChanged: (value) {
+                if (value != null) glassesService.setVideoSource(value);
+              },
+              child: Column(
+                children: [
+                  _buildVideoSourceOption(
+                    glassesService,
+                    VideoSource.glasses,
+                    Icons.visibility,
+                    'Meta Glasses',
+                    'Stream from Ray-Ban Meta glasses',
+                  ),
+                  _buildVideoSourceOption(
+                    glassesService,
+                    VideoSource.backCamera,
+                    Icons.camera_rear,
+                    'Back Camera',
+                    'Use phone\'s rear camera',
+                  ),
+                  _buildVideoSourceOption(
+                    glassesService,
+                    VideoSource.frontCamera,
+                    Icons.camera_front,
+                    'Front Camera',
+                    'Use phone\'s front camera',
+                  ),
+                  _buildVideoSourceOption(
+                    glassesService,
+                    VideoSource.screenShare,
+                    Icons.screen_share,
+                    'Screen Share',
+                    'Share your screen via Jitsi',
+                  ),
+                ],
+              ),
             ),
           ],
         ),
@@ -486,14 +495,7 @@ class _SetupScreenState extends State<SetupScreen> {
       opacity: enabled ? 1.0 : 0.5,
       child: RadioListTile<VideoSource>(
         value: source,
-        groupValue: glassesService.videoSource,
-        onChanged: enabled
-            ? (value) {
-                if (value != null) {
-                  glassesService.setVideoSource(value);
-                }
-              }
-            : null,
+        toggleable: enabled,
         title: Row(
           children: [
             Icon(icon, size: 20, color: isSelected ? Theme.of(context).primaryColor : null),

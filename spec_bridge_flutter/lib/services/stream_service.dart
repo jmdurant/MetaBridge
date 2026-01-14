@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../data/models/app_settings.dart';
 import '../data/models/meeting_config.dart';
 import '../data/models/stream_status.dart';
 import 'bluetooth_audio_service.dart';
@@ -54,8 +55,16 @@ class StreamService extends ChangeNotifier {
     notifyListeners();
   }
 
+  // Current audio output setting (can be changed during call)
+  AudioOutput _currentAudioOutput = AudioOutput.phoneSpeaker;
+  AudioOutput get currentAudioOutput => _currentAudioOutput;
+
   /// Start streaming video to a Jitsi meeting
-  Future<void> startStreaming(MeetingConfig config) async {
+  Future<void> startStreaming(
+    MeetingConfig config, {
+    AudioOutput audioOutput = AudioOutput.phoneSpeaker,
+    VideoQuality videoQuality = VideoQuality.medium,
+  }) async {
     try {
       if (_libJitsiService == null) {
         throw Exception('LibJitsiService not available');
@@ -63,15 +72,25 @@ class StreamService extends ChangeNotifier {
 
       _updateState(_currentState.copyWith(status: StreamStatus.starting));
       _frameCount = 0;
+      _currentAudioOutput = audioOutput;
 
       final videoSource = _glassesService.videoSource;
       final isGlassesMode = videoSource.toString().contains('glasses');
       debugPrint('StreamService: Starting lib-jitsi-meet mode, videoSource=$videoSource, isGlassesMode=$isGlassesMode');
+      debugPrint('StreamService: audioOutput=$audioOutput, videoQuality=$videoQuality');
 
-      // 1. Route audio to glasses if available
-      final audioRouted = await _bluetoothAudioService.autoRouteToGlasses();
-      if (audioRouted) {
-        debugPrint('StreamService: Audio routed to glasses');
+      // 1. Route audio based on setting
+      // For glasses mode, only route to glasses if explicitly requested (to preserve BT bandwidth for video)
+      bool audioRouted = false;
+      if (audioOutput == AudioOutput.glasses) {
+        audioRouted = await _bluetoothAudioService.autoRouteToGlasses();
+        if (audioRouted) {
+          debugPrint('StreamService: Audio routed to glasses');
+        } else {
+          debugPrint('StreamService: Failed to route audio to glasses, using phone speaker');
+        }
+      } else {
+        debugPrint('StreamService: Using phone speaker for audio (preserves BT bandwidth for video)');
       }
 
       // For glasses mode: Start video capture FIRST to avoid conflict with WebView audio setup
@@ -79,7 +98,9 @@ class StreamService extends ChangeNotifier {
       // when WebView audio setup runs concurrently with glasses stream session creation
       if (isGlassesMode) {
         debugPrint('StreamService: [Glasses] Starting video capture FIRST...');
-        final captureStarted = await _glassesService.startStreaming();
+        final captureStarted = await _glassesService.startStreaming(
+          videoQuality: videoQuality.name,
+        );
         if (!captureStarted) {
           throw Exception('Failed to start glasses video capture');
         }
@@ -100,7 +121,9 @@ class StreamService extends ChangeNotifier {
         debugPrint('StreamService: [Camera] Meeting join initiated, isInMeeting=${_libJitsiService!.isInMeeting}');
 
         debugPrint('StreamService: [Camera] Starting video capture...');
-        final captureStarted = await _glassesService.startStreaming();
+        final captureStarted = await _glassesService.startStreaming(
+          videoQuality: videoQuality.name,
+        );
         if (!captureStarted) {
           throw Exception('Failed to start video capture');
         }
@@ -187,6 +210,30 @@ class StreamService extends ChangeNotifier {
     if (_libJitsiService != null) {
       await _libJitsiService!.toggleVideo();
     }
+  }
+
+  /// Switch audio output during a call
+  Future<bool> setAudioOutput(AudioOutput output) async {
+    if (output == _currentAudioOutput) return true;
+
+    bool success = false;
+    if (output == AudioOutput.glasses) {
+      success = await _bluetoothAudioService.autoRouteToGlasses();
+      if (success) {
+        debugPrint('StreamService: Switched audio to glasses');
+      }
+    } else {
+      await _bluetoothAudioService.clearAudioDevice();
+      success = true;
+      debugPrint('StreamService: Switched audio to phone speaker');
+    }
+
+    if (success) {
+      _currentAudioOutput = output;
+      _updateState(_currentState.copyWith(isGlassesAudioActive: output == AudioOutput.glasses));
+    }
+
+    return success;
   }
 
   @override

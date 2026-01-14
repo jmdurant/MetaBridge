@@ -119,12 +119,14 @@ class GlassesService extends ChangeNotifier {
     int width = 1280,
     int height = 720,
     int frameRate = 24,
+    String videoQuality = 'medium',
   }) async {
     final config = StreamConfig(
       width: width,
       height: height,
       frameRate: frameRate,
       videoSource: _currentState.videoSource,
+      videoQuality: videoQuality,
     );
     return await _channel.startStreaming(config);
   }

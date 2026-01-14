@@ -39,6 +39,10 @@ let currentBitrate = 0;
 // E2EE config (stored from joinRoom call)
 let e2eeConfig = { enabled: false, passphrase: '' };
 
+// Participant tracking for lazy captureStream
+let remoteParticipantCount = 0;
+let videoTrackStarted = false;
+
 // Canvas setup - use WebGL for I420 YUV rendering
 const canvas = document.getElementById('videoCanvas');
 let canvasStream = null;
@@ -55,15 +59,37 @@ let texCoordBuffer = null;
 // Fallback 2D context (for JPEG if needed)
 let ctx = null;
 
+// Pre-allocated buffers to reduce GC pressure
+// Max size for 1280x720: Y=921600, UV=230400 each, total ~1.4MB
+// We'll allocate for up to 1920x1080 to be safe: Y=2073600, UV=518400
+const MAX_Y_SIZE = 2073600;
+const MAX_UV_SIZE = 518400;
+let preAllocatedY = new Uint8Array(MAX_Y_SIZE);
+let preAllocatedU = new Uint8Array(MAX_UV_SIZE);
+let preAllocatedV = new Uint8Array(MAX_UV_SIZE);
+let preAllocatedDataView = null; // Will be created on first frame
+let lastFrameWidth = 0;
+let lastFrameHeight = 0;
+
 // Initialize WebGL for I420 YUV rendering
 function initWebGL() {
-  gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+  gl = canvas.getContext('webgl2') || canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
   if (!gl) {
     console.warn('[JitsiBridge] WebGL not supported, falling back to 2D canvas');
     ctx = canvas.getContext('2d');
     return false;
   }
-  console.log('[JitsiBridge] WebGL initialized');
+
+  // Log GPU info to verify hardware acceleration
+  const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+  if (debugInfo) {
+    const vendor = gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL);
+    const renderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
+    console.log('[JitsiBridge] WebGL GPU Vendor:', vendor);
+    console.log('[JitsiBridge] WebGL GPU Renderer:', renderer);
+  }
+  const isWebGL2 = gl instanceof WebGL2RenderingContext;
+  console.log('[JitsiBridge] WebGL initialized (version:', isWebGL2 ? 'WebGL2' : 'WebGL1', ')');
 
   // Vertex shader - just passes through positions and tex coords
   const vertexShaderSource = `
@@ -205,7 +231,54 @@ function renderI420Frame(yData, uData, vData, width, height) {
 
   // Draw
   gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+  // Force GPU to complete and check for errors (for debugging)
+  const error = gl.getError();
+  if (error !== gl.NO_ERROR) {
+    console.error('[JitsiBridge] WebGL error:', error);
+  }
+
   return true;
+}
+
+// GPU timing stats
+let gpuTimeTotal = 0;
+let gpuTimeCount = 0;
+
+// CPU profiling - track time spent in different stages
+let profileStats = {
+  blobRead: { total: 0, count: 0 },
+  webglRender: { total: 0, count: 0 },
+  gpuSync: { total: 0, count: 0 },
+  captureStream: { total: 0, count: 0 },
+  total: { total: 0, count: 0 }
+};
+
+function logProfileStats() {
+  const stats = {};
+  for (const [key, val] of Object.entries(profileStats)) {
+    if (val.count > 0) {
+      stats[key] = {
+        avg: (val.total / val.count).toFixed(2) + 'ms',
+        total: val.total.toFixed(0) + 'ms',
+        count: val.count
+      };
+    }
+  }
+  console.log('[JitsiBridge] === CPU PROFILE ===');
+  console.log('[JitsiBridge] blobRead:', stats.blobRead?.avg || 'N/A');
+  console.log('[JitsiBridge] webglRender:', stats.webglRender?.avg || 'N/A');
+  console.log('[JitsiBridge] gpuSync:', stats.gpuSync?.avg || 'N/A');
+  console.log('[JitsiBridge] total frame:', stats.total?.avg || 'N/A');
+  console.log('[JitsiBridge] ====================');
+}
+
+// Measure actual GPU time by forcing sync
+function measureGpuTime() {
+  if (!gl) return 0;
+  const start = performance.now();
+  gl.finish(); // Force GPU to complete all pending operations
+  return performance.now() - start;
 }
 
 // WebSocket for receiving frames from Flutter
@@ -321,50 +394,93 @@ async function processI420Frame(blob) {
   const decodeStart = Date.now();
 
   try {
-    // Read blob as ArrayBuffer
+    // Read blob as ArrayBuffer - track timing
+    const blobReadStart = performance.now();
     const buffer = await blob.arrayBuffer();
-    const data = new Uint8Array(buffer);
+    const blobReadTime = performance.now() - blobReadStart;
+    profileStats.blobRead.total += blobReadTime;
+    profileStats.blobRead.count++;
 
     // Parse header: width (4 bytes), height (4 bytes), then I420 data
-    if (data.length < 8) {
-      console.warn('[JitsiBridge] Frame too small:', data.length);
+    if (buffer.byteLength < 8) {
+      console.warn('[JitsiBridge] Frame too small:', buffer.byteLength);
       isProcessingFrame = false;
       return;
     }
 
-    const view = new DataView(buffer);
-    const width = view.getUint32(0, true);  // little-endian
-    const height = view.getUint32(4, true);
+    // Reuse DataView if possible, create only on first frame
+    if (!preAllocatedDataView || preAllocatedDataView.buffer !== buffer) {
+      preAllocatedDataView = new DataView(buffer);
+    }
+    const width = preAllocatedDataView.getUint32(0, true);  // little-endian
+    const height = preAllocatedDataView.getUint32(4, true);
 
     // Calculate expected I420 size
     const ySize = width * height;
     const uvSize = (width / 2) * (height / 2);
     const expectedSize = 8 + ySize + uvSize * 2;
 
-    if (data.length < expectedSize) {
-      console.warn('[JitsiBridge] Frame data incomplete: got ' + data.length + ', expected ' + expectedSize);
+    if (buffer.byteLength < expectedSize) {
+      console.warn('[JitsiBridge] Frame data incomplete: got ' + buffer.byteLength + ', expected ' + expectedSize);
       isProcessingFrame = false;
       return;
     }
 
-    // Extract Y, U, V planes
+    // Check if frame size changed
+    if (width !== lastFrameWidth || height !== lastFrameHeight) {
+      console.log('[JitsiBridge] Frame size changed to ' + width + 'x' + height + ', ySize=' + ySize + ', uvSize=' + uvSize);
+      lastFrameWidth = width;
+      lastFrameHeight = height;
+    }
+
+    // Use pre-allocated buffers - direct views into the blob's ArrayBuffer
+    // We create typed array views directly on the buffer (no copying, just pointer math)
+    // These view objects are small and short-lived, but the actual data is in the blob's buffer
     const yData = new Uint8Array(buffer, 8, ySize);
     const uData = new Uint8Array(buffer, 8 + ySize, uvSize);
     const vData = new Uint8Array(buffer, 8 + ySize + uvSize, uvSize);
 
-    // Render using WebGL
+    // Note: The blob's ArrayBuffer will be GC'd after this frame, but that's unavoidable
+    // without changing the WebSocket transport. The typed array views above are cheap
+    // (just ~24 bytes each for the object metadata).
+
+    // Render using WebGL - track timing
+    const renderStart = performance.now();
     if (gl) {
       renderI420Frame(yData, uData, vData, width, height);
     } else {
       // Fallback: would need to convert to RGB manually (not implemented)
       console.warn('[JitsiBridge] WebGL not available, cannot render I420');
     }
+    const renderTime = performance.now() - renderStart;
+    profileStats.webglRender.total += renderTime;
+    profileStats.webglRender.count++;
 
     // Track timing
     lastDecodeTimeMs = Date.now() - decodeStart;
     totalDecodeTimeMs += lastDecodeTimeMs;
     framesDrawn++;
     lastFrameTime = Date.now();
+
+    // Measure GPU sync time (forces GPU to finish, shows actual GPU load)
+    const gpuSyncTime = measureGpuTime();
+    gpuTimeTotal += gpuSyncTime;
+    gpuTimeCount++;
+    profileStats.gpuSync.total += gpuSyncTime;
+    profileStats.gpuSync.count++;
+    profileStats.total.total += lastDecodeTimeMs;
+    profileStats.total.count++;
+
+    // Log detailed timing every 100 frames
+    if (framesDrawn % 100 === 0) {
+      const avgGpuTime = gpuTimeCount > 0 ? (gpuTimeTotal / gpuTimeCount).toFixed(1) : 0;
+      console.log('[JitsiBridge] Frame timing: blobRead=' + blobReadTime.toFixed(1) + 'ms, render=' + renderTime.toFixed(1) + 'ms, gpuSync=' + gpuSyncTime.toFixed(1) + 'ms (avg=' + avgGpuTime + 'ms), total=' + lastDecodeTimeMs + 'ms');
+    }
+
+    // Log CPU profile every 500 frames
+    if (framesDrawn % 500 === 0) {
+      logProfileStats();
+    }
 
   } catch (e) {
     console.error('[JitsiBridge] Frame processing error:', e);
@@ -481,7 +597,8 @@ async function onConnectionEstablished(room, displayName) {
   updateStatus('Connected, joining room: ' + room);
 
   try {
-    // Initialize conference with E2EE support
+    // Initialize conference with E2EE support and codec preferences for hardware encoding
+    // Pixel 9a and newer devices have hardware AV1 encoding support
     conference = connection.initJitsiConference(room.toLowerCase(), {
       openBridgeChannel: true,
       p2p: {
@@ -489,6 +606,72 @@ async function onConnectionEstablished(room, displayName) {
       },
       e2ee: {
         enabled: e2eeConfig.enabled
+      },
+      // Video quality settings with codec preferences for hardware encoding
+      // NOTE: AV1 uses software (libaom) in WebView even on Pixel 9a
+      // H264 has the best hardware encoder support via MediaCodec on Android
+      videoQuality: {
+        // Desktop codec preference - H264 first for HW encoding, then VP9, AV1
+        codecPreferenceOrder: ['H264', 'VP9', 'AV1', 'VP8'],
+        // Mobile codec preference - H264 first for reliable HW encoding (MediaCodec)
+        mobileCodecPreferenceOrder: ['H264', 'VP9', 'AV1', 'VP8'],
+        // Screenshare codec - use H264 for hardware encoding
+        screenshareCodec: 'H264',
+        mobileScreenshareCodec: 'H264',
+        // Enable adaptive mode to handle CPU overuse
+        enableAdaptiveMode: true,
+        // AV1 config with KSVC for efficiency
+        av1: {
+          maxBitratesVideo: {
+            low: 100000,
+            standard: 300000,
+            high: 1000000,
+            fullHd: 2000000,
+            ultraHd: 4000000,
+            ssHigh: 2500000
+          },
+          scalabilityModeEnabled: true,
+          useSimulcast: false,
+          useKSVC: true
+        },
+        // H264 fallback config
+        h264: {
+          maxBitratesVideo: {
+            low: 200000,
+            standard: 500000,
+            high: 1500000,
+            fullHd: 3000000,
+            ultraHd: 6000000,
+            ssHigh: 2500000
+          },
+          scalabilityModeEnabled: true
+        },
+        // VP9 config (good hardware support)
+        vp9: {
+          maxBitratesVideo: {
+            low: 100000,
+            standard: 300000,
+            high: 1200000,
+            fullHd: 2500000,
+            ultraHd: 5000000,
+            ssHigh: 2500000
+          },
+          scalabilityModeEnabled: true,
+          useSimulcast: false,
+          useKSVC: true
+        },
+        // VP8 config (often software-only, avoid if possible)
+        vp8: {
+          maxBitratesVideo: {
+            low: 200000,
+            standard: 500000,
+            high: 1500000,
+            fullHd: 3000000,
+            ultraHd: 6000000,
+            ssHigh: 2500000
+          },
+          scalabilityModeEnabled: false
+        }
       }
     });
 
@@ -505,28 +688,30 @@ async function onConnectionEstablished(room, displayName) {
       // Continue without audio if it fails
     }
 
-    // Create video track from canvas
-    // Using 'desktop' type prevents Jitsi from trying to re-acquire a real camera on unmute
-    try {
-      canvasStream = canvas.captureStream(30); // 30 fps to match glasses
-      const videoTrackInfo = [{
-        stream: canvasStream,
-        sourceType: 'canvas',
-        mediaType: 'video',
-        videoType: 'desktop'  // 'desktop' type = screen share, won't trigger camera acquisition
-      }];
-      const videoTracks = JitsiMeetJS.createLocalTracksFromMediaStreams(videoTrackInfo);
-      localVideoTrack = videoTracks[0];
-      updateStatus('Video track created from canvas (as desktop share)');
-    } catch (videoError) {
-      console.error('[JitsiBridge] Video track creation failed:', videoError);
-      notifyFlutter('error', { message: 'Video track failed: ' + videoError.message });
-    }
+    // Create video track immediately on join
+    await startVideoTrack();
+    console.log('[JitsiBridge] Video track created on join');
 
     // Conference event listeners
     conference.on(JitsiMeetJS.events.conference.CONFERENCE_JOINED, async () => {
       isJoined = true;
       updateStatus('Joined room: ' + room);
+
+      // Log codec information for debugging
+      try {
+        const localTracks = conference.getLocalTracks();
+        console.log('[JitsiBridge] Local tracks:', localTracks.length);
+        localTracks.forEach(track => {
+          console.log('[JitsiBridge] Track type:', track.getType(), 'videoType:', track.videoType);
+        });
+
+        // Try to get codec info from peer connection (may not be immediately available)
+        setTimeout(() => {
+          logCodecInfo();
+        }, 3000);
+      } catch (e) {
+        console.log('[JitsiBridge] Could not log track info:', e);
+      }
 
       // Enable E2EE if configured
       if (e2eeConfig.enabled && e2eeConfig.passphrase) {
@@ -553,6 +738,8 @@ async function onConnectionEstablished(room, displayName) {
     });
 
     conference.on(JitsiMeetJS.events.conference.USER_JOINED, (id, user) => {
+      remoteParticipantCount++;
+      console.log('[JitsiBridge] Peer joined, count:', remoteParticipantCount);
       notifyFlutter('participantJoined', {
         id: id,
         displayName: user.getDisplayName() || 'Guest'
@@ -560,6 +747,8 @@ async function onConnectionEstablished(room, displayName) {
     });
 
     conference.on(JitsiMeetJS.events.conference.USER_LEFT, (id) => {
+      remoteParticipantCount = Math.max(0, remoteParticipantCount - 1);
+      console.log('[JitsiBridge] Peer left, count:', remoteParticipantCount);
       notifyFlutter('participantLeft', { id: id });
     });
 
@@ -579,12 +768,9 @@ async function onConnectionEstablished(room, displayName) {
       });
     });
 
-    // Add tracks to conference
+    // Add audio track to conference
     if (localAudioTrack) {
       await conference.addTrack(localAudioTrack);
-    }
-    if (localVideoTrack) {
-      await conference.addTrack(localVideoTrack);
     }
 
     // Set display name
@@ -755,6 +941,8 @@ function leaveRoom() {
     isE2EEEnabled = false;
     canvasStream = null;
     e2eeConfig = { enabled: false, passphrase: '' };
+    remoteParticipantCount = 0;
+    videoTrackStarted = false;
     updateStatus('Left room');
     notifyFlutter('left', {});
   } catch (e) {
@@ -773,7 +961,187 @@ function getState() {
   };
 }
 
+// Log codec info from WebRTC stats
+async function logCodecInfo() {
+  console.log('[JitsiBridge] logCodecInfo called, conference:', !!conference);
+
+  if (!conference) {
+    console.log('[JitsiBridge] No conference to get codec info from');
+    return;
+  }
+
+  try {
+    // Try different ways to get the peer connection
+    console.log('[JitsiBridge] Checking for peer connections...');
+    console.log('[JitsiBridge] jvbJingleSession:', !!conference.jvbJingleSession);
+    console.log('[JitsiBridge] p2pJingleSession:', !!conference.p2pJingleSession);
+
+    // Get peer connection from conference - lib-jitsi-meet uses different property names
+    const jvbSession = conference.jvbJingleSession;
+    const p2pSession = conference.p2pJingleSession;
+
+    const logPeerStats = async (name, session) => {
+      console.log('[JitsiBridge] Checking ' + name + ' session:', !!session);
+      if (!session) return;
+
+      // Try different property names for peer connection
+      let pc = null;
+      if (session.peerconnection) {
+        pc = session.peerconnection.peerconnection || session.peerconnection;
+      }
+      if (!pc && session.pc) {
+        pc = session.pc;
+      }
+
+      console.log('[JitsiBridge] ' + name + ' peer connection found:', !!pc);
+      if (!pc || typeof pc.getStats !== 'function') {
+        console.log('[JitsiBridge] ' + name + ' has no getStats method');
+        return;
+      }
+
+      const stats = await pc.getStats();
+      let foundVideo = false;
+      stats.forEach(report => {
+        if (report.type === 'outbound-rtp' && report.kind === 'video') {
+          foundVideo = true;
+          console.log('[JitsiBridge] === ' + name + ' VIDEO ENCODER STATS ===');
+          console.log('[JitsiBridge] codecId:', report.codecId);
+          console.log('[JitsiBridge] encoderImplementation:', report.encoderImplementation);
+          console.log('[JitsiBridge] qualityLimitationReason:', report.qualityLimitationReason);
+          console.log('[JitsiBridge] frameWidth:', report.frameWidth, 'frameHeight:', report.frameHeight);
+          console.log('[JitsiBridge] framesPerSecond:', report.framesPerSecond);
+          console.log('[JitsiBridge] bytesSent:', report.bytesSent);
+          console.log('[JitsiBridge] =====================================');
+        }
+        if (report.type === 'codec' && report.mimeType && report.mimeType.includes('video')) {
+          console.log('[JitsiBridge] ' + name + ' Video codec mimeType:', report.mimeType);
+        }
+      });
+      if (!foundVideo) {
+        console.log('[JitsiBridge] ' + name + ' No video outbound-rtp stats found');
+      }
+    };
+
+    await logPeerStats('JVB', jvbSession);
+    await logPeerStats('P2P', p2pSession);
+
+    // Check encoderImplementation to see if hardware encoding is used
+    // Values like "ExternalEncoder" or containing "HW" indicate hardware
+    // Values like "libvpx" or "OpenH264" indicate software encoding
+  } catch (e) {
+    console.log('[JitsiBridge] Error getting codec stats:', e.message);
+    console.log('[JitsiBridge] Stack:', e.stack);
+  }
+}
+
+// Periodically log codec stats (every 30 seconds)
+setInterval(() => {
+  if (isJoined) {
+    logCodecInfo();
+  }
+}, 30000);
+
 // Expose functions to Flutter
+// Create video track from canvas captureStream
+async function startVideoTrack() {
+  if (videoTrackStarted) {
+    console.log('[JitsiBridge] Video track already started');
+    return;
+  }
+  if (!conference) {
+    console.log('[JitsiBridge] Cannot start video track - no conference');
+    return;
+  }
+
+  console.log('[JitsiBridge] Starting video track (peer joined, starting captureStream)');
+
+  try {
+    // NOW we create captureStream - only when needed!
+    canvasStream = canvas.captureStream(24); // 24 fps max from glasses
+    const videoTrackInfo = [{
+      stream: canvasStream,
+      sourceType: 'canvas',
+      mediaType: 'video',
+      videoType: 'desktop'  // 'desktop' type = screen share, won't trigger camera acquisition
+    }];
+    const videoTracks = JitsiMeetJS.createLocalTracksFromMediaStreams(videoTrackInfo);
+    localVideoTrack = videoTracks[0];
+
+    // Add to conference
+    await conference.addTrack(localVideoTrack);
+
+    videoTrackStarted = true;
+    console.log('[JitsiBridge] Video track started and added to conference');
+    updateStatus('Video streaming started (peer present)');
+    notifyFlutter('videoTrackStarted', {});
+  } catch (videoError) {
+    console.error('[JitsiBridge] Video track creation failed:', videoError);
+    notifyFlutter('error', { message: 'Video track failed: ' + videoError.message });
+  }
+}
+
+async function stopVideoTrack() {
+  if (!videoTrackStarted) {
+    console.log('[JitsiBridge] Video track already stopped');
+    return;
+  }
+
+  console.log('[JitsiBridge] Stopping video track (no peers remaining)');
+
+  try {
+    if (localVideoTrack) {
+      await conference.removeTrack(localVideoTrack);
+      localVideoTrack.dispose();
+      localVideoTrack = null;
+    }
+    if (canvasStream) {
+      canvasStream.getTracks().forEach(track => track.stop());
+      canvasStream = null;
+    }
+
+    videoTrackStarted = false;
+    console.log('[JitsiBridge] Video track stopped - CPU savings when alone');
+    updateStatus('Video streaming paused (no peers)');
+    notifyFlutter('videoTrackStopped', {});
+  } catch (e) {
+    console.error('[JitsiBridge] Error stopping video track:', e);
+  }
+}
+
+// Debug function to test captureStream CPU impact
+let captureStreamPaused = false;
+function toggleCaptureStream() {
+  captureStreamPaused = !captureStreamPaused;
+  if (captureStreamPaused && canvasStream) {
+    // Stop the tracks to see if CPU drops
+    canvasStream.getTracks().forEach(track => track.stop());
+    console.log('[JitsiBridge] captureStream STOPPED - check if CPU drops');
+  } else if (!captureStreamPaused) {
+    // Recreate captureStream
+    canvasStream = canvas.captureStream(24);
+    console.log('[JitsiBridge] captureStream RESUMED');
+  }
+  return captureStreamPaused ? 'stopped' : 'running';
+}
+
+// Debug function to check what tracks exist and their states
+function debugTracks() {
+  console.log('[JitsiBridge] === TRACK DEBUG ===');
+  console.log('[JitsiBridge] canvasStream exists:', !!canvasStream);
+  if (canvasStream) {
+    const tracks = canvasStream.getTracks();
+    console.log('[JitsiBridge] canvasStream tracks:', tracks.length);
+    tracks.forEach((t, i) => {
+      console.log('[JitsiBridge]   Track ' + i + ':', t.kind, 'enabled:', t.enabled, 'readyState:', t.readyState);
+      const settings = t.getSettings();
+      console.log('[JitsiBridge]   Settings:', JSON.stringify(settings));
+    });
+  }
+  console.log('[JitsiBridge] localVideoTrack exists:', !!localVideoTrack);
+  console.log('[JitsiBridge] localAudioTrack exists:', !!localAudioTrack);
+  console.log('[JitsiBridge] ====================');
+}
+
 window.initJitsi = initJitsi;
 window.joinRoom = joinRoom;
 window.leaveRoom = leaveRoom;
@@ -787,6 +1155,12 @@ window.getStats = getStats;
 window.setupE2EE = setupE2EE;
 window.disableE2EE = disableE2EE;
 window.isE2EE = isE2EE;
+window.logCodecInfo = logCodecInfo;
+window.toggleCaptureStream = toggleCaptureStream;
+window.debugTracks = debugTracks;
+window.logProfileStats = logProfileStats;
+window.startVideoTrack = startVideoTrack;
+window.stopVideoTrack = stopVideoTrack;
 
 // Auto-initialize when script loads
 if (typeof JitsiMeetJS !== 'undefined') {
