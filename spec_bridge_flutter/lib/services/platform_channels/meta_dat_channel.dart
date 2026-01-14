@@ -85,6 +85,13 @@ abstract class MetaDATChannel {
   /// Check if native frame server is enabled
   Future<bool> isNativeServerEnabled();
 
+  /// Set video source for stats tracking (without starting native capture)
+  /// Used when camera mode uses WebView's getUserMedia directly
+  Future<bool> setVideoSource(VideoSource source);
+
+  /// Reset native frame server client state for clean session transitions
+  Future<bool> resetFrameServer();
+
   /// Event stream for connection/status updates
   Stream<MetaDATEvent> get eventStream;
 
@@ -339,6 +346,33 @@ class MetaDATChannelImpl implements MetaDATChannel {
       final result = await _methodChannel.invokeMethod<bool>('isNativeServerEnabled');
       return result ?? false;
     } on PlatformException {
+      return false;
+    }
+  }
+
+  @override
+  Future<bool> setVideoSource(VideoSource source) async {
+    try {
+      final result = await _methodChannel.invokeMethod<bool>(
+        'setVideoSource',
+        {'source': source.name},
+      );
+      debugPrint('MetaDATChannel: Video source set to ${source.name}');
+      return result ?? false;
+    } on PlatformException catch (e) {
+      debugPrint('MetaDATChannel: setVideoSource error: $e');
+      return false;
+    }
+  }
+
+  @override
+  Future<bool> resetFrameServer() async {
+    try {
+      final result = await _methodChannel.invokeMethod<bool>('resetFrameServer');
+      debugPrint('MetaDATChannel: Frame server reset');
+      return result ?? false;
+    } on PlatformException catch (e) {
+      debugPrint('MetaDATChannel: resetFrameServer error: $e');
       return false;
     }
   }

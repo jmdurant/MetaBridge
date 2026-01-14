@@ -1011,6 +1011,8 @@ async function onConnectionEstablished(room, displayName) {
     }
 
     // Join the conference
+    // Give server a moment after connection before joining - helps with rapid reconnections
+    await new Promise(resolve => setTimeout(resolve, 500));
     console.log('[JitsiBridge] === Calling conference.join() ===');
     console.log('[JitsiBridge] Pre-join state:');
     console.log('[JitsiBridge]   localVideoTrack:', !!localVideoTrack);
@@ -1103,24 +1105,102 @@ function toggleAudio() {
 // Video controls
 // Note: For canvas-based video (desktop type), we just mute/unmute the existing track
 // We never try to re-acquire a camera device
-function setVideoMuted(muted) {
+async function setVideoMuted(muted) {
+  console.log('[JitsiBridge] setVideoMuted called:', muted, 'videoSourceMode:', videoSourceMode);
   isVideoMuted = muted;
-  if (localVideoTrack) {
-    try {
-      if (muted) {
-        localVideoTrack.mute();
+
+  if (!localVideoTrack) {
+    console.warn('[JitsiBridge] No localVideoTrack to mute/unmute!');
+    return;
+  }
+
+  try {
+    if (muted) {
+      // Muting - just mute the track
+      console.log('[JitsiBridge] Muting video track...');
+      localVideoTrack.mute();
+    } else {
+      // Unmuting - check if track is dead and needs recreation
+      const underlyingTrack = localVideoTrack.getTrack ? localVideoTrack.getTrack() : null;
+      console.log('[JitsiBridge] Underlying track state:', underlyingTrack?.readyState);
+
+      if (underlyingTrack?.readyState === 'ended') {
+        // Track is dead, need to recreate
+        console.log('[JitsiBridge] Track ended, recreating for mode:', videoSourceMode);
+
+        if (videoSourceMode === 'camera') {
+          // Camera mode - get fresh getUserMedia
+          if (cameraStream) {
+            cameraStream.getTracks().forEach(track => track.stop());
+          }
+          cameraStream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+            audio: false
+          });
+
+          // Update camera preview
+          const cameraPreview = document.getElementById('cameraPreview');
+          if (cameraPreview) {
+            cameraPreview.srcObject = cameraStream;
+          }
+
+          // Create new JitsiLocalTrack
+          const newTracks = await JitsiMeetJS.createLocalTracks({
+            devices: ['video'],
+            cameraDeviceId: cameraStream.getVideoTracks()[0].getSettings().deviceId
+          });
+
+          const newVideoTrack = newTracks.find(t => t.getType() === 'video');
+          if (newVideoTrack && conference) {
+            await conference.removeTrack(localVideoTrack);
+            localVideoTrack.dispose();
+            localVideoTrack = newVideoTrack;
+            await conference.addTrack(localVideoTrack);
+            console.log('[JitsiBridge] Camera track recreated and added to conference');
+          }
+        } else {
+          // Canvas/glasses mode - get fresh captureStream
+          if (canvasStream) {
+            canvasStream.getTracks().forEach(track => track.stop());
+          }
+          canvasStream = canvas.captureStream(24);
+          console.log('[JitsiBridge] Fresh canvasStream created');
+
+          // Create new JitsiLocalTrack using createLocalTracksFromMediaStreams (same as initial creation)
+          const videoTrackInfo = [{
+            stream: canvasStream,
+            sourceType: 'canvas',
+            mediaType: 'video',
+            videoType: 'camera'  // Must be 'camera' - 'desktop' not supported in WebView
+          }];
+          const newTracks = JitsiMeetJS.createLocalTracksFromMediaStreams(videoTrackInfo);
+          const newVideoTrack = newTracks[0];
+
+          if (newVideoTrack && conference) {
+            await conference.removeTrack(localVideoTrack);
+            localVideoTrack.dispose();
+            localVideoTrack = newVideoTrack;
+            await conference.addTrack(localVideoTrack);
+            console.log('[JitsiBridge] Canvas track recreated and added to conference');
+          }
+        }
       } else {
+        // Track is still alive, just unmute
+        console.log('[JitsiBridge] Unmuting video track...');
         localVideoTrack.unmute();
       }
-    } catch (e) {
-      console.warn('[JitsiBridge] Video mute/unmute error (ignored):', e);
     }
-    notifyFlutter('videoMutedChanged', { muted: muted });
+    console.log('[JitsiBridge] Video muted state:', localVideoTrack.isMuted());
+  } catch (e) {
+    console.error('[JitsiBridge] Video mute/unmute error:', e);
   }
+  notifyFlutter('videoMutedChanged', { muted: muted });
 }
 
-function toggleVideo() {
-  setVideoMuted(!isVideoMuted);
+async function toggleVideo() {
+  console.log('[JitsiBridge] toggleVideo called, current isVideoMuted:', isVideoMuted);
+  await setVideoMuted(!isVideoMuted);
+  console.log('[JitsiBridge] toggleVideo done, new isVideoMuted:', isVideoMuted);
   return isVideoMuted;
 }
 
@@ -1366,6 +1446,9 @@ setInterval(() => {
   }
 }, 30000);
 
+// Track current camera facing mode for front/back switching
+let currentCameraFacing = null;  // 'user' or 'environment'
+
 // Set video source mode: 'glasses', 'frontCamera', or 'backCamera'
 // For camera modes, we use getUserMedia directly (much more efficient)
 // For glasses mode, we use canvas captureStream (frames from native)
@@ -1374,18 +1457,24 @@ async function setVideoSource(source) {
   console.log('[JitsiBridge] setVideoSource called with:', source);
   console.log('[JitsiBridge] Current videoSourceMode:', videoSourceMode);
   console.log('[JitsiBridge] Current videoTrackStarted:', videoTrackStarted);
+  console.log('[JitsiBridge] Current cameraFacing:', currentCameraFacing);
 
   const isCameraMode = source === 'frontCamera' || source === 'backCamera';
   const newMode = isCameraMode ? 'camera' : 'canvas';
-  console.log('[JitsiBridge] isCameraMode:', isCameraMode, 'newMode:', newMode);
+  const newFacing = source === 'frontCamera' ? 'user' : (source === 'backCamera' ? 'environment' : null);
+  console.log('[JitsiBridge] isCameraMode:', isCameraMode, 'newMode:', newMode, 'newFacing:', newFacing);
 
-  // If mode is changing and we have an active track, we need to switch
-  if (newMode !== videoSourceMode && videoTrackStarted) {
-    console.log('[JitsiBridge] Video source mode changing from', videoSourceMode, 'to', newMode, '- stopping current track');
+  // Stop track if mode is changing OR if camera facing is changing
+  const modeChanging = newMode !== videoSourceMode;
+  const facingChanging = isCameraMode && currentCameraFacing !== null && currentCameraFacing !== newFacing;
+
+  if ((modeChanging || facingChanging) && videoTrackStarted) {
+    console.log('[JitsiBridge] Video source changing - stopping current track (modeChanging:', modeChanging, 'facingChanging:', facingChanging, ')');
     await stopVideoTrack();
   }
 
   videoSourceMode = newMode;
+  currentCameraFacing = newFacing;
   console.log('[JitsiBridge] videoSourceMode set to:', videoSourceMode);
 
   if (isCameraMode) {

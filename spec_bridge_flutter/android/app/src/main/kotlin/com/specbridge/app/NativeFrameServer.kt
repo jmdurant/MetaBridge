@@ -145,4 +145,21 @@ class NativeFrameServer(port: Int = DEFAULT_PORT) : WebSocketServer(InetSocketAd
             "framesDropped" to framesDropped
         )
     }
+
+    /**
+     * Reset client state for clean session transition.
+     * Closes any existing client and resets frame counters.
+     */
+    fun resetClient() {
+        android.util.Log.d(TAG, "Resetting client state (framesSent=$framesSent, framesDropped=$framesDropped)")
+        try {
+            connectedClient?.close()
+        } catch (e: Exception) {
+            android.util.Log.w(TAG, "Error closing client during reset: ${e.message}")
+        }
+        connectedClient = null
+        framesSent = 0L
+        framesDropped = 0L
+        android.util.Log.d(TAG, "Client state reset complete")
+    }
 }

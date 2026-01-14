@@ -300,6 +300,38 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
                       },
                     ),
 
+                    // Video muted overlay
+                    Consumer<LibJitsiService>(
+                      builder: (context, libJitsiService, _) {
+                        if (!libJitsiService.currentState.isVideoMuted) {
+                          return const SizedBox.shrink();
+                        }
+                        return Container(
+                          color: Colors.black87,
+                          child: const Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.videocam_off,
+                                  color: Colors.white54,
+                                  size: 64,
+                                ),
+                                SizedBox(height: 16),
+                                Text(
+                                  'Video Off',
+                                  style: TextStyle(
+                                    color: Colors.white54,
+                                    fontSize: 18,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+
                     // Stats overlay
                     Consumer<SettingsService>(
                       builder: (context, settingsService, _) => StatsOverlay(
@@ -583,6 +615,7 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
         isVideoMuted: isVideoMuted,
         isScreenSharing: false,
         isScreenShareMode: videoSource == VideoSource.screenShare,
+        currentSource: videoSource.name,
         onToggleAudio: () async {
           final streamService = context.read<StreamService>();
           await streamService.toggleAudio();
@@ -595,8 +628,108 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
           // Screen share not implemented for lib-jitsi-meet yet
           debugPrint('Screen share not implemented for lib-jitsi-meet');
         },
+        onSwitchSource: () => _showSourcePicker(videoSource),
         onEndCall: _stopStreaming,
       ),
     );
+  }
+
+  void _showSourcePicker(VideoSource currentSource) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.grey[900],
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text(
+                'Switch Video Source',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            _buildSourceOption(
+              icon: Icons.visibility,
+              label: 'Glasses',
+              source: VideoSource.glasses,
+              currentSource: currentSource,
+            ),
+            _buildSourceOption(
+              icon: Icons.camera_front,
+              label: 'Front Camera',
+              source: VideoSource.frontCamera,
+              currentSource: currentSource,
+            ),
+            _buildSourceOption(
+              icon: Icons.camera_rear,
+              label: 'Back Camera',
+              source: VideoSource.backCamera,
+              currentSource: currentSource,
+            ),
+            const SizedBox(height: 16),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSourceOption({
+    required IconData icon,
+    required String label,
+    required VideoSource source,
+    required VideoSource currentSource,
+  }) {
+    final isSelected = source == currentSource;
+    return ListTile(
+      leading: Icon(
+        icon,
+        color: isSelected ? Colors.blue : Colors.white70,
+      ),
+      title: Text(
+        label,
+        style: TextStyle(
+          color: isSelected ? Colors.blue : Colors.white,
+          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+        ),
+      ),
+      trailing: isSelected
+          ? const Icon(Icons.check, color: Colors.blue)
+          : null,
+      onTap: () async {
+        Navigator.pop(context);
+        if (source != currentSource) {
+          await _switchVideoSource(source);
+        }
+      },
+    );
+  }
+
+  Future<void> _switchVideoSource(VideoSource newSource) async {
+    debugPrint('StreamingScreen: Switching video source to ${newSource.name}');
+
+    final glassesService = context.read<GlassesService>();
+    final libJitsiService = context.read<LibJitsiService>();
+
+    // Update glasses service state
+    glassesService.setVideoSource(newSource);
+
+    // Notify native layer (for glasses frame sending)
+    await glassesService.notifyVideoSourceToNative(newSource);
+
+    // Switch in the WebView/Jitsi
+    await libJitsiService.setVideoSource(newSource.name);
+
+    // Restart video track with new source
+    await libJitsiService.restartVideoTrack();
+
+    debugPrint('StreamingScreen: Video source switched to ${newSource.name}');
   }
 }

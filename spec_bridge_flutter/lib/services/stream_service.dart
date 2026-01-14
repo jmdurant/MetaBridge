@@ -98,8 +98,8 @@ class StreamService extends ChangeNotifier {
         debugPrint('StreamService: Using phone speaker for audio (preserves BT bandwidth for video)');
       }
 
-      // For camera mode, we need to set up getUserMedia BEFORE joining
-      // because startVideoTrack() is called inside onConnectionEstablished
+      // Set video source mode in WebView BEFORE joining (camera mode only)
+      // This must happen before startVideoTrack() which is called in onConnectionEstablished
       if (!isGlassesMode) {
         // Camera mode: Use getUserMedia directly in WebView (much more efficient!)
         // No native capture needed - WebView handles camera access via WebRTC
@@ -108,18 +108,26 @@ class StreamService extends ChangeNotifier {
         // Notify native side of video source for stats tracking
         await _glassesService.notifyVideoSourceToNative(videoSource);
 
-        // Tell WebView to use camera mode BEFORE joining - this acquires camera via getUserMedia
-        // This must happen before startVideoTrack() which is called in onConnectionEstablished
+        // Tell WebView to use camera mode - this acquires camera via getUserMedia
         final cameraReady = await _libJitsiService!.setVideoSource(videoSource.name);
         if (!cameraReady) {
           throw Exception('Failed to access camera in WebView');
         }
         debugPrint('StreamService: Camera ready in WebView, now joining meeting...');
+      } else {
+        // Glasses mode: Wait for WebSocket to be connected before joining
+        // This ensures the frame pipeline is ready before creating the video track
+        debugPrint('StreamService: Using glasses mode - waiting for WebSocket connection...');
+        final wsConnected = await _libJitsiService!.waitForWebSocketConnected();
+        if (!wsConnected) {
+          throw Exception('WebSocket connection failed - cannot stream glasses video');
+        }
+        debugPrint('StreamService: WebSocket connected, ready to join meeting');
       }
 
       // Join meeting - this triggers startVideoTrack() in onConnectionEstablished
       // For camera: will use the getUserMedia stream we just acquired
-      // For glasses: will use canvas mode (default)
+      // For glasses: will use canvas captureStream with WebSocket ready for frames
       debugPrint('StreamService: [${ isGlassesMode ? "Glasses" : "Camera"}] Joining meeting...');
       await _libJitsiService!.joinMeeting(config);
 
@@ -187,6 +195,10 @@ class StreamService extends ChangeNotifier {
 
       // Stop glasses streaming
       await _glassesService.stopStreaming();
+
+      // Reset native frame server client state for clean session transition
+      await _glassesService.resetFrameServer();
+      debugPrint('StreamService: Native frame server reset for clean session transition');
 
       // Leave meeting
       if (_libJitsiService != null) {

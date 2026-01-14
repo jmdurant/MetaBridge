@@ -74,4 +74,7 @@ dependencies {
 
     // Lifecycle for coroutine scope
     implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.8.7'
+
+    // Java-WebSocket for native frame server (bypasses Flutter UI thread)
+    implementation 'org.java-websocket:Java-WebSocket:1.5.7'
 }

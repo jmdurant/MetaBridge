@@ -104,7 +104,7 @@ class LibJitsiState {
     this.isInitialized = false,
     this.isInMeeting = false,
     this.isAudioMuted = false,
-    this.isVideoMuted = true,
+    this.isVideoMuted = false,
     this.isE2EEEnabled = false,
     this.roomName,
     this.errorMessage,
@@ -144,6 +144,15 @@ class LibJitsiService extends ChangeNotifier {
   LibJitsiState _currentState = const LibJitsiState();
   MeetingConfig? _pendingConfig;
   String? _pendingVideoSource; // Queued video source to set after initialization
+
+  // Completer for waiting on camera to be ready (getUserMedia complete)
+  Completer<bool>? _cameraReadyCompleter;
+
+  // Completer for waiting on WebSocket to be connected (for glasses frame pipeline)
+  Completer<bool>? _wsConnectedCompleter;
+
+  // Completer for waiting on full disconnection (XMPP session closed)
+  Completer<bool>? _disconnectedCompleter;
 
   // WebSocket server for fast binary frame transfer
   final FrameWebSocketServer _wsServer = FrameWebSocketServer();
@@ -239,6 +248,13 @@ class LibJitsiService extends ChangeNotifier {
         _pendingConfig = null;
         break;
 
+      case 'disconnected':
+        // XMPP connection fully closed - safe to reconnect now
+        debugPrint('LibJitsiService: Disconnected event received');
+        _disconnectedCompleter?.complete(true);
+        _disconnectedCompleter = null;
+        break;
+
       case 'connectionFailed':
       case 'conferenceFailed':
       case 'error':
@@ -282,12 +298,69 @@ class LibJitsiService extends ChangeNotifier {
       case 'e2eeError':
         debugPrint('LibJitsiService: E2EE error: ${data['message']}');
         break;
+
+      case 'cameraReady':
+        // Camera acquired via getUserMedia - complete the waiting Future
+        debugPrint('LibJitsiService: Camera ready event received');
+        _cameraReadyCompleter?.complete(true);
+        _cameraReadyCompleter = null;
+        break;
+
+      case 'wsConnected':
+        // WebSocket connected - frame pipeline is ready
+        debugPrint('LibJitsiService: WebSocket connected event received');
+        _wsConnectedCompleter?.complete(true);
+        _wsConnectedCompleter = null;
+        break;
+
+      case 'wsDisconnected':
+        debugPrint('LibJitsiService: WebSocket disconnected');
+        break;
     }
   }
 
   void _updateState(LibJitsiState newState) {
     _currentState = newState;
     notifyListeners();
+  }
+
+  /// Wait for WebSocket to be connected (for glasses frame pipeline)
+  /// Call this before joining a meeting in glasses mode to ensure frames can flow
+  Future<bool> waitForWebSocketConnected({Duration timeout = const Duration(seconds: 10)}) async {
+    if (_controller == null) return false;
+
+    // First check if already connected by querying JS
+    try {
+      final result = await _controller?.evaluateJavascript(
+        source: 'typeof frameSocket !== "undefined" && frameSocket && frameSocket.readyState === WebSocket.OPEN',
+      );
+      if (result == true || result == 'true') {
+        debugPrint('LibJitsiService: WebSocket already connected');
+        return true;
+      }
+    } catch (e) {
+      debugPrint('LibJitsiService: Error checking WebSocket status: $e');
+    }
+
+    // Not connected yet, wait for wsConnected event
+    _wsConnectedCompleter = Completer<bool>();
+    debugPrint('LibJitsiService: Waiting for WebSocket to connect...');
+
+    try {
+      final connected = await _wsConnectedCompleter!.future.timeout(
+        timeout,
+        onTimeout: () {
+          debugPrint('LibJitsiService: WebSocket connection timeout!');
+          return false;
+        },
+      );
+      debugPrint('LibJitsiService: WebSocket connected: $connected');
+      return connected;
+    } catch (e) {
+      debugPrint('LibJitsiService: WebSocket wait error: $e');
+      _wsConnectedCompleter = null;
+      return false;
+    }
   }
 
   /// Prepare and join a meeting
@@ -324,25 +397,61 @@ class LibJitsiService extends ChangeNotifier {
   Future<void> leaveMeeting() async {
     debugPrint('LibJitsiService: Leaving meeting...');
 
-    // Call JS leaveRoom and wait a moment for async cleanup
+    // Set up completer to wait for actual disconnection event
+    _disconnectedCompleter = Completer<bool>();
+
+    // Call JS leaveRoom
     try {
       await _controller?.evaluateJavascript(source: 'leaveRoom()');
-      // Give JS time to complete async cleanup (conference.leave() is async)
-      await Future.delayed(const Duration(milliseconds: 500));
+
+      // Wait for actual disconnected event from JS (server-side cleanup complete)
+      // This is critical - reconnecting before server cleanup causes JVB session failures
+      debugPrint('LibJitsiService: Waiting for disconnected event...');
+      final disconnected = await _disconnectedCompleter!.future.timeout(
+        const Duration(seconds: 5),
+        onTimeout: () {
+          debugPrint('LibJitsiService: Disconnect timeout - proceeding anyway');
+          return false;
+        },
+      );
+      debugPrint('LibJitsiService: Disconnected: $disconnected');
     } catch (e) {
       debugPrint('LibJitsiService: Error during leave: $e');
     }
+
+    // Clear the completer
+    _disconnectedCompleter = null;
 
     await _wsServer.stop();
 
     // Reset all pending state
     _pendingConfig = null;
     _pendingVideoSource = null;
+    _cameraReadyCompleter = null;
+    _wsConnectedCompleter = null;
 
     // Reset state to clean slate
     _updateState(const LibJitsiState());
 
+    // Reload WebView to get fresh lib-jitsi-meet instance
+    // This clears any stale internal state from the previous session
+    await reloadWebView();
+
     debugPrint('LibJitsiService: Left meeting, state reset');
+  }
+
+  /// Reload the WebView to get a fresh lib-jitsi-meet instance
+  /// Call this before starting a new session to clear any stale state
+  Future<void> reloadWebView() async {
+    debugPrint('LibJitsiService: Reloading WebView for fresh state...');
+
+    // Reset initialized state - we'll wait for 'initialized' event again
+    _updateState(_currentState.copyWith(isInitialized: false));
+
+    // Reload the HTML file
+    await _controller?.loadFile(assetFilePath: 'assets/jitsi_bridge.html');
+
+    debugPrint('LibJitsiService: WebView reload initiated');
   }
 
   // Frame counter for debug logging
@@ -418,28 +527,44 @@ class LibJitsiService extends ChangeNotifier {
   }
 
   /// Internal method to actually call JavaScript setVideoSource
+  /// For camera modes, waits for the 'cameraReady' event from JS
   Future<bool> _setVideoSourceInternal(String source) async {
     if (_controller == null) return false;
 
+    final isCameraMode = source == 'frontCamera' || source == 'backCamera';
+
     try {
-      // Wrap in an async IIFE to ensure the Promise is awaited
-      final result = await _controller?.evaluateJavascript(
-        source: '''
-          (async function() {
-            try {
-              const success = await setVideoSource("$source");
-              return success;
-            } catch (e) {
-              console.error('[JitsiBridge] setVideoSource error:', e);
-              return false;
-            }
-          })()
-        ''',
+      // For camera mode, set up completer to wait for cameraReady event
+      if (isCameraMode) {
+        _cameraReadyCompleter = Completer<bool>();
+        debugPrint('LibJitsiService: Waiting for camera to be ready...');
+      }
+
+      // Call JS setVideoSource - this returns immediately (Promise not awaited by evaluateJavascript)
+      await _controller?.evaluateJavascript(
+        source: 'setVideoSource("$source")',
       );
-      debugPrint('LibJitsiService: setVideoSource($source) result: $result');
-      return result == true || result == 'true';
+
+      // For camera mode, wait for the actual cameraReady event from JS
+      if (isCameraMode && _cameraReadyCompleter != null) {
+        // Wait with timeout in case something goes wrong
+        final ready = await _cameraReadyCompleter!.future.timeout(
+          const Duration(seconds: 10),
+          onTimeout: () {
+            debugPrint('LibJitsiService: Camera ready timeout!');
+            return false;
+          },
+        );
+        debugPrint('LibJitsiService: Camera ready: $ready');
+        return ready;
+      }
+
+      // For glasses/canvas mode, no need to wait
+      debugPrint('LibJitsiService: setVideoSource($source) - canvas mode, no wait needed');
+      return true;
     } catch (e) {
       debugPrint('LibJitsiService: setVideoSource error: $e');
+      _cameraReadyCompleter = null;
       return false;
     }
   }
@@ -452,17 +577,21 @@ class LibJitsiService extends ChangeNotifier {
 
   /// Toggle audio mute
   Future<bool> toggleAudio() async {
+    debugPrint('LibJitsiService: toggleAudio called');
     final result = await _controller?.evaluateJavascript(
       source: 'toggleAudio()',
     );
+    debugPrint('LibJitsiService: toggleAudio result: $result');
     return result == true || result == 'true';
   }
 
   /// Toggle video mute
   Future<bool> toggleVideo() async {
+    debugPrint('LibJitsiService: toggleVideo called');
     final result = await _controller?.evaluateJavascript(
       source: 'toggleVideo()',
     );
+    debugPrint('LibJitsiService: toggleVideo result: $result');
     return result == true || result == 'true';
   }
 
@@ -478,6 +607,15 @@ class LibJitsiService extends ChangeNotifier {
     await _controller?.evaluateJavascript(
       source: 'setVideoMuted($muted)',
     );
+  }
+
+  /// Restart video track after source switch
+  Future<void> restartVideoTrack() async {
+    debugPrint('LibJitsiService: Restarting video track');
+    await _controller?.evaluateJavascript(
+      source: 'startVideoTrack()',
+    );
+    debugPrint('LibJitsiService: Video track restart initiated');
   }
 
   /// Resume the WebView after app comes back to foreground

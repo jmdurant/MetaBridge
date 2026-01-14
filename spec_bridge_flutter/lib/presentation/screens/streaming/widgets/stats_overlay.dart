@@ -99,13 +99,46 @@ class _StatsOverlayState extends State<StatsOverlay> {
   Widget build(BuildContext context) {
     if (!widget.isVisible) return const SizedBox.shrink();
 
-    // Extract native stats
+    // Video source type from native and JS
+    // Native reports current source, WebView reports actual mode being used
+    final nativeVideoSource = _nativeStats['videoSource'] ?? 'unknown';
+    final webViewMode = _webViewStats.videoSourceMode; // 'camera' or 'canvas'
+    final hasCameraStream = _webViewStats.hasCameraStream;
+
+    // Determine actual video source - prefer WebView's info as source of truth
+    // since it knows what's actually being used for WebRTC
+    final isDirectCamera = webViewMode == 'camera' && hasCameraStream;
+
+    // For display, use native source but validate against WebView mode
+    String videoSource = nativeVideoSource;
+    if (isDirectCamera && nativeVideoSource == 'glasses') {
+      // WebView is using camera but native wasn't updated - this is a bug state
+      // Show what WebView is actually using
+      videoSource = 'camera (WebView)';
+    }
+
+    final isGlassesMode = !isDirectCamera && (nativeVideoSource == 'glasses' || webViewMode == 'canvas');
+    final isCameraMode = nativeVideoSource == 'frontCamera' || nativeVideoSource == 'backCamera';
+
+    // Native server stats
+    final useNativeServer = _nativeStats['useNativeServer'] ?? false;
+    final nativeServerRunning = _nativeStats['nativeServerRunning'] ?? false;
+    final nativeServerHasClient = _nativeStats['nativeServerHasClient'] ?? false;
+    final nativeFramesSent = _nativeStats['nativeFramesSent'] ?? 0;
+    final nativeFramesDropped = _nativeStats['nativeFramesDropped'] ?? 0;
+
+    // Extract native capture stats (glasses mode)
     final nativeReceived = _nativeStats['framesReceived'] ?? 0;
     final nativeProcessed = _nativeStats['framesProcessed'] ?? 0;
     final nativeSkipped = _nativeStats['framesSkipped'] ?? 0;
     final nativeSkipRate = _nativeStats['skipRate'] ?? 0;
     final encodeTimeMs = _nativeStats['lastEncodeTimeMs'] ?? 0;
     final avgEncodeMs = _nativeStats['avgEncodeTimeMs'] ?? 0;
+
+    // Camera stats
+    final cameraFrameCount = _nativeStats['cameraFrameCount'] ?? 0;
+
+    // System stats
     final cpuUsage = _nativeStats['cpuUsage'] ?? -1;
     final memUsed = _nativeStats['memoryUsedMB'] ?? 0;
     final memMax = _nativeStats['memoryMaxMB'] ?? 0;
@@ -119,10 +152,13 @@ class _StatsOverlayState extends State<StatsOverlay> {
     final flutterDropped = _flutterStats['framesDropped'] ?? 0;
     final flutterDropRate = _flutterStats['dropRate'] ?? 0;
 
-    // Calculate EventChannel loss
+    // Calculate EventChannel loss (only relevant if not using native server)
     final eventChannelLoss = nativeProcessed > 0
         ? ((nativeProcessed - flutterReceived) * 100 / nativeProcessed).round()
         : 0;
+
+    // Determine which path is active
+    final usingNativePath = useNativeServer && nativeServerHasClient;
 
     return Positioned(
       top: 60,
@@ -137,38 +173,67 @@ class _StatsOverlayState extends State<StatsOverlay> {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Pipeline header
+            // Pipeline header with source indicator
             _buildSectionHeader('PIPELINE STATS'),
+            _buildStatRow('Source', _formatVideoSource(videoSource, isDirectCamera)),
             const SizedBox(height: 4),
 
-            // Native (Glasses -> I420)
-            _buildSectionLabel('Native (I420)'),
-            _buildStatRow('Recv/Proc/Skip', '$nativeReceived/$nativeProcessed/$nativeSkipped'),
-            _buildStatRow('Skip Rate', '$nativeSkipRate%'),
-            _buildStatRow('Process Time', '${encodeTimeMs}ms (avg ${avgEncodeMs}ms)'),
-            const SizedBox(height: 6),
+            // Direct camera mode - minimal stats (no processing pipeline)
+            if (isDirectCamera) ...[
+              _buildSectionLabel('Direct WebRTC'),
+              _buildStatRow(
+                'Path',
+                'getUserMedia → WebRTC',
+                valueColor: Colors.greenAccent,
+              ),
+              _buildStatRow('Camera', hasCameraStream ? 'Active' : 'Inactive',
+                  valueColor: hasCameraStream ? Colors.greenAccent : Colors.redAccent),
+              _buildStatRow('Resolution', _webViewStats.resolution),
+              _buildStatRow('Has Track', _webViewStats.hasVideoTrack ? 'Yes' : 'No',
+                  valueColor: _webViewStats.hasVideoTrack ? Colors.greenAccent : Colors.orangeAccent),
+              const SizedBox(height: 6),
+            ] else ...[
+              // Capture stats - different for glasses vs camera (legacy JPEG path)
+              if (isGlassesMode) ...[
+                _buildSectionLabel('Capture (I420)'),
+                _buildStatRow('Recv/Proc/Skip', '$nativeReceived/$nativeProcessed/$nativeSkipped'),
+                _buildStatRow('Skip Rate', '$nativeSkipRate%'),
+                _buildStatRow('Process Time', '${encodeTimeMs}ms (avg ${avgEncodeMs}ms)'),
+                const SizedBox(height: 6),
+              ] else if (isCameraMode) ...[
+                _buildSectionLabel('Capture (JPEG) - Legacy'),
+                _buildStatRow('Frames', '$cameraFrameCount'),
+                const SizedBox(height: 6),
+              ],
 
-            // EventChannel (Native -> Flutter)
-            _buildSectionLabel('EventChannel'),
-            _buildStatRow('Received', '$flutterReceived @ ${eventChannelFps}fps'),
-            _buildStatRow('Loss', '$eventChannelLoss% (vs nativeProc)'),
-            const SizedBox(height: 6),
+              // Transport layer - show which path is active
+              _buildSectionLabel('Transport'),
+              _buildStatRow(
+                'Path',
+                usingNativePath ? 'Native WS (8766)' : 'Flutter WS (8765)',
+                valueColor: usingNativePath ? Colors.greenAccent : Colors.orangeAccent,
+              ),
+              if (usingNativePath) ...[
+                _buildStatRow('Sent/Drop', '$nativeFramesSent/$nativeFramesDropped'),
+              ] else ...[
+                _buildStatRow('EventCh Recv', '$flutterReceived @ ${eventChannelFps}fps'),
+                if (isGlassesMode) _buildStatRow('EventCh Loss', '$eventChannelLoss%'),
+                _buildStatRow('WS Sent/Drop', '$flutterSent/$flutterDropped'),
+              ],
+              const SizedBox(height: 6),
 
-            // Flutter (WebSocket to WebView)
-            _buildSectionLabel('Flutter (WebSocket)'),
-            _buildStatRow('WS Status', _webViewStats.wsConnected ? 'Connected' : 'Disconnected'),
-            _buildStatRow('Sent/Dropped', '$flutterSent/$flutterDropped'),
-            _buildStatRow('Drop Rate', '$flutterDropRate%'),
-            const SizedBox(height: 6),
-
-            // WebView (Canvas -> WebRTC)
-            _buildSectionLabel('WebView (Decode)'),
-            _buildStatRow('Recv/Drawn/Drop', '${_webViewStats.totalFrames}/${_webViewStats.framesDrawn}/${_webViewStats.framesDroppedJs}'),
-            _buildStatRow('Drop Rate', '${_webViewStats.jsDropRate}%'),
-            _buildStatRow('Decode Time', '${_webViewStats.lastDecodeMs}ms (avg ${_webViewStats.avgDecodeMs}ms)'),
-            _buildStatRow('FPS Out', '${_webViewStats.fps}'),
-            _buildStatRow('Resolution', _webViewStats.resolution),
-            const SizedBox(height: 6),
+              // WebView frame processing stats (only for canvas mode)
+              _buildSectionLabel('WebView'),
+              _buildStatRow('WS', _webViewStats.wsConnected ? 'Connected' : 'Disconnected',
+                  valueColor: _webViewStats.wsConnected ? Colors.greenAccent : Colors.redAccent),
+              _buildStatRow('Recv/Drawn', '${_webViewStats.totalFrames}/${_webViewStats.framesDrawn}'),
+              _buildStatRow('Drop (queue/stale)', '${_webViewStats.framesDroppedJs}/${_webViewStats.framesDroppedStale}'),
+              _buildStatRow('Decode', '${_webViewStats.lastDecodeMs}ms (avg ${_webViewStats.avgDecodeMs}ms)'),
+              _buildStatRow('Arrival Interval', '${_webViewStats.avgArrivalMs}ms'),
+              _buildStatRow('FPS Out', '${_webViewStats.fps}'),
+              _buildStatRow('Resolution', _webViewStats.resolution),
+              const SizedBox(height: 6),
+            ],
 
             // System
             _buildSectionLabel('System'),
@@ -192,6 +257,10 @@ class _StatsOverlayState extends State<StatsOverlay> {
                     size: 12,
                     color: _webViewStats.hasVideoTrack ? Colors.green : Colors.red,
                   ),
+                  if (_webViewStats.isE2EEEnabled) ...[
+                    const SizedBox(width: 4),
+                    const Icon(Icons.lock, size: 12, color: Colors.green),
+                  ],
                   const SizedBox(width: 8),
                   const Text(
                     'Connected',
@@ -204,6 +273,19 @@ class _StatsOverlayState extends State<StatsOverlay> {
         ),
       ),
     );
+  }
+
+  String _formatVideoSource(String source, bool isDirectCamera) {
+    switch (source) {
+      case 'glasses':
+        return 'Glasses (I420)';
+      case 'frontCamera':
+        return isDirectCamera ? 'Front Camera (Direct)' : 'Front Camera (JPEG)';
+      case 'backCamera':
+        return isDirectCamera ? 'Back Camera (Direct)' : 'Back Camera (JPEG)';
+      default:
+        return source;
+    }
   }
 
   Widget _buildSectionHeader(String title) {
@@ -233,7 +315,7 @@ class _StatsOverlayState extends State<StatsOverlay> {
     );
   }
 
-  Widget _buildStatRow(String label, String value) {
+  Widget _buildStatRow(String label, String value, {Color? valueColor}) {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -247,8 +329,8 @@ class _StatsOverlayState extends State<StatsOverlay> {
         ),
         Text(
           value,
-          style: const TextStyle(
-            color: Colors.white,
+          style: TextStyle(
+            color: valueColor ?? Colors.white,
             fontSize: 11,
             fontWeight: FontWeight.bold,
             fontFamily: 'monospace',

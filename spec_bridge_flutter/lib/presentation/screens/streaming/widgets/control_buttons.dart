@@ -6,9 +6,11 @@ class ControlButtons extends StatelessWidget {
   final bool isVideoMuted;
   final bool isScreenSharing;
   final bool isScreenShareMode;  // True when video source is screen share
+  final String currentSource;  // 'glasses', 'frontCamera', 'backCamera'
   final VoidCallback onToggleAudio;
   final VoidCallback onToggleVideo;
   final VoidCallback onToggleScreenShare;
+  final VoidCallback onSwitchSource;
   final VoidCallback onEndCall;
 
   const ControlButtons({
@@ -17,11 +19,37 @@ class ControlButtons extends StatelessWidget {
     required this.isVideoMuted,
     this.isScreenSharing = false,
     this.isScreenShareMode = false,
+    this.currentSource = 'glasses',
     required this.onToggleAudio,
     required this.onToggleVideo,
     required this.onToggleScreenShare,
+    required this.onSwitchSource,
     required this.onEndCall,
   });
+
+  IconData _getSourceIcon() {
+    switch (currentSource) {
+      case 'frontCamera':
+        return Icons.camera_front;
+      case 'backCamera':
+        return Icons.camera_rear;
+      case 'glasses':
+      default:
+        return Icons.visibility;
+    }
+  }
+
+  String _getSourceLabel() {
+    switch (currentSource) {
+      case 'frontCamera':
+        return 'Front';
+      case 'backCamera':
+        return 'Back';
+      case 'glasses':
+      default:
+        return 'Glasses';
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -36,7 +64,7 @@ class ControlButtons extends StatelessWidget {
           onPressed: onToggleAudio,
         ),
 
-        // Middle button: Screen share OR Video toggle depending on mode
+        // Video toggle button
         if (isScreenShareMode)
           _ControlButton(
             icon: isScreenSharing ? Icons.stop_screen_share : Icons.screen_share,
@@ -52,6 +80,15 @@ class ControlButtons extends StatelessWidget {
             isActive: !isVideoMuted,
             onPressed: onToggleVideo,
           ),
+
+        // Switch source button
+        _ControlButton(
+          icon: _getSourceIcon(),
+          label: _getSourceLabel(),
+          isActive: true,
+          activeColor: Colors.blue,
+          onPressed: onSwitchSource,
+        ),
 
         // End call button
         _ControlButton(

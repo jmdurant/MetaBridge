@@ -114,6 +114,12 @@ class GlassesService extends ChangeNotifier {
     _updateState(_currentState.copyWith(videoSource: source));
   }
 
+  /// Notify native side of video source (for stats tracking)
+  /// Used when camera mode uses WebView's getUserMedia directly
+  Future<bool> notifyVideoSourceToNative(VideoSource source) async {
+    return await _channel.setVideoSource(source);
+  }
+
   /// Start video streaming from current video source
   Future<bool> startStreaming({
     int width = 1280,
@@ -139,6 +145,11 @@ class GlassesService extends ChangeNotifier {
   /// Enable/disable native frame server (bypasses Flutter UI thread)
   Future<bool> setNativeServerEnabled(bool enabled) async {
     return await _channel.setNativeServerEnabled(enabled);
+  }
+
+  /// Reset native frame server client state for clean session transitions
+  Future<bool> resetFrameServer() async {
+    return await _channel.resetFrameServer();
   }
 
   /// Disconnect from glasses

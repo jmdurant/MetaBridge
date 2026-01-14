@@ -59,11 +59,16 @@ class MetaWearablesPlugin(
             "stopStreaming" -> stopStreaming(result)
             "disconnect" -> disconnect(result)
             "getStreamStats" -> getStreamStats(result)
+            "setVideoSource" -> {
+                val source = call.argument<String>("source") ?: "glasses"
+                setVideoSource(source, result)
+            }
             "setNativeServerEnabled" -> {
                 val enabled = call.argument<Boolean>("enabled") ?: false
                 setNativeServerEnabled(enabled, result)
             }
             "isNativeServerEnabled" -> isNativeServerEnabled(result)
+            "resetFrameServer" -> resetFrameServer(result)
             else -> result.notImplemented()
         }
     }
@@ -316,13 +321,47 @@ class MetaWearablesPlugin(
         }
     }
 
+    /**
+     * Set the current video source for stats tracking without starting capture.
+     * Used when camera mode uses WebView's getUserMedia directly.
+     */
+    private fun setVideoSource(source: String, result: MethodChannel.Result) {
+        currentVideoSource = source
+        android.util.Log.d("MetaWearablesPlugin", "Video source set to: $source (stats only)")
+        result.success(true)
+    }
+
     private fun getStreamStats(result: MethodChannel.Result) {
         val stats = mutableMapOf<String, Any>()
 
-        // Get stream manager stats (glasses or camera)
+        // Add video source type
+        stats["videoSource"] = currentVideoSource
+
+        // Get stream manager stats (glasses)
         streamManager?.let {
             stats.putAll(it.getStats())
         }
+
+        // Get camera manager stats
+        cameraManager?.let {
+            stats["cameraFrameCount"] = it.frameCount
+        }
+
+        // Get native frame server stats
+        nativeFrameServer?.let {
+            val serverStats = it.getStats()
+            stats["nativeServerRunning"] = serverStats["isRunning"] ?: false
+            stats["nativeServerHasClient"] = serverStats["hasClient"] ?: false
+            stats["nativeServerPort"] = serverStats["port"] ?: 0
+            stats["nativeFramesSent"] = serverStats["framesSent"] ?: 0L
+            stats["nativeFramesDropped"] = serverStats["framesDropped"] ?: 0L
+        } ?: run {
+            stats["nativeServerRunning"] = false
+            stats["nativeServerHasClient"] = false
+        }
+
+        // Add whether native server mode is enabled
+        stats["useNativeServer"] = useNativeServer
 
         // Add CPU usage
         try {
@@ -369,6 +408,16 @@ class MetaWearablesPlugin(
 
     private fun isNativeServerEnabled(result: MethodChannel.Result) {
         result.success(useNativeServer && nativeFrameServer != null)
+    }
+
+    /**
+     * Reset the native frame server client state for clean session transitions.
+     * Call this when stopping streaming to ensure no stale state affects the next session.
+     */
+    private fun resetFrameServer(result: MethodChannel.Result) {
+        android.util.Log.d("MetaWearablesPlugin", "Resetting native frame server client state")
+        nativeFrameServer?.resetClient()
+        result.success(true)
     }
 
     // CPU usage tracking
