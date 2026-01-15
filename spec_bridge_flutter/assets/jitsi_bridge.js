@@ -27,6 +27,26 @@ let lastFrameArrivalTime = 0;
 let frameArrivalIntervals = [];
 // pendingFrameData removed - we now drop frames immediately to stay current
 
+// E2E Latency tracking (native capture → JS receive)
+let lastFrameLatencyMs = 0;
+let totalFrameLatencyMs = 0;
+let maxFrameLatencyMs = 0;
+let latencyMeasurements = 0;
+
+// WebRTC encoder stats (updated periodically from RTCPeerConnection.getStats)
+let rtcFramesEncoded = 0;
+let rtcFramesSent = 0;
+let rtcFramesDropped = 0;  // framesEncoded - framesSent = pending in encoder
+let rtcQualityLimitationReason = 'none';
+let rtcEncoderImpl = 'unknown';
+let rtcEncodeWidth = 0;
+let rtcEncodeHeight = 0;
+let rtcEncodeFps = 0;
+let rtcBytesSent = 0;
+let rtcPacketsSent = 0;
+let rtcRetransmittedPackets = 0;
+let rtcStatsCollectorInterval = null;
+
 // Stats tracking (must be declared before use in handleBinaryFrame)
 let frameCount = 0;
 let lastFrameTime = Date.now();
@@ -417,11 +437,12 @@ function handleBinaryFrame(blob) {
     lastStatsFrameCount = framesDrawn;
     lastBytesReceived = totalBytesReceived;
 
-    // Debug logging - calculate avg arrival interval
+    // Debug logging - calculate avg arrival interval and latency
     const avgInterval = frameArrivalIntervals.length > 0
       ? Math.round(frameArrivalIntervals.reduce((a, b) => a + b, 0) / frameArrivalIntervals.length)
       : 0;
-    console.log('[JitsiBridge] Stats: received=' + frameCount + ' drawn=' + framesDrawn + ' dropped=' + framesDroppedJs + ' stale=' + framesDroppedStale + ' avgArrivalMs=' + avgInterval);
+    const avgLatency = latencyMeasurements > 0 ? Math.round(totalFrameLatencyMs / latencyMeasurements) : 0;
+    console.log('[JitsiBridge] Stats: recv=' + frameCount + ' drawn=' + framesDrawn + ' dropQ=' + framesDroppedJs + ' dropStale=' + framesDroppedStale + ' arrivalMs=' + avgInterval + ' latencyMs=' + lastFrameLatencyMs + '/' + avgLatency + '/' + maxFrameLatencyMs + ' (last/avg/max)');
   }
 
   // Single-frame buffer pattern: always keep only the latest frame
@@ -631,6 +652,16 @@ async function processI420FrameInternal(blob) {
       return;
     }
 
+    // Track E2E latency (frame passed age check, so frameAge is valid)
+    if (frameAge < 0x80000000) {  // Valid measurement (not a wraparound artifact)
+      lastFrameLatencyMs = frameAge;
+      totalFrameLatencyMs += frameAge;
+      latencyMeasurements++;
+      if (frameAge > maxFrameLatencyMs) {
+        maxFrameLatencyMs = frameAge;
+      }
+    }
+
     // Calculate expected I420 size
     const ySize = width * height;
     const uvSize = (width / 2) * (height / 2);
@@ -720,6 +751,41 @@ function notifyFlutter(event, data) {
   }
 }
 
+// Video layout management for 1:1 calls
+// When peer joins: remote video = main, local = thumbnail
+// When alone: local = main, hide remote
+function updateVideoLayout(hasPeer) {
+  const remoteVideo = document.getElementById('remoteVideo');
+  const localCanvas = document.getElementById('videoCanvas');
+  const cameraPreview = document.getElementById('cameraPreview');
+  const waitingMessage = document.getElementById('waitingMessage');
+
+  console.log('[JitsiBridge] Updating video layout, hasPeer:', hasPeer);
+
+  if (hasPeer) {
+    // Peer connected: show remote as main, local as thumbnail
+    if (remoteVideo) remoteVideo.classList.add('active');
+    if (localCanvas) localCanvas.classList.add('thumbnail');
+    if (cameraPreview) cameraPreview.classList.add('thumbnail');
+    if (waitingMessage) waitingMessage.classList.remove('active');
+  } else {
+    // Alone: show local as main, hide remote
+    if (remoteVideo) remoteVideo.classList.remove('active');
+    if (localCanvas) localCanvas.classList.remove('thumbnail');
+    if (cameraPreview) cameraPreview.classList.remove('thumbnail');
+    // Show waiting message only if we're in a room
+    if (waitingMessage && isJoined) waitingMessage.classList.add('active');
+  }
+}
+
+// Show waiting message when we join a room
+function showWaitingForPeer() {
+  const waitingMessage = document.getElementById('waitingMessage');
+  if (waitingMessage && remoteParticipantCount === 0) {
+    waitingMessage.classList.add('active');
+  }
+}
+
 // Initialize lib-jitsi-meet
 function initJitsi() {
   try {
@@ -746,7 +812,9 @@ function initJitsi() {
 }
 
 // Join a room
-async function joinRoom(server, room, displayName, enableE2EE = false, e2eePassphrase = '') {
+// usePhoneMic: when true, forces phone's built-in mic instead of Bluetooth
+//              to avoid competing with glasses video stream for BT bandwidth
+async function joinRoom(server, room, displayName, enableE2EE = false, e2eePassphrase = '', usePhoneMic = true) {
   updateStatus('Connecting to ' + server + '...');
 
   // Store E2EE config for use after joining
@@ -845,13 +913,17 @@ async function onConnectionEstablished(room, displayName) {
     });
 
     // Create audio track from microphone
+    // Note: When usePhoneMic=true, native code has already forced speakerphone mode,
+    // so WebRTC will use the phone's built-in mic instead of Bluetooth.
+    // This preserves Bluetooth bandwidth for glasses video streaming.
     try {
+      console.log('[JitsiBridge] Creating audio track (usePhoneMic=' + usePhoneMic + ')');
       const audioTracks = await JitsiMeetJS.createLocalTracks({
         devices: ['audio'],
-        micDeviceId: 'default'
       });
       localAudioTrack = audioTracks[0];
       updateStatus('Audio track created');
+      console.log('[JitsiBridge] Audio track created successfully');
     } catch (audioError) {
       console.warn('[JitsiBridge] Audio track creation failed:', audioError);
       // Continue without audio if it fails
@@ -902,6 +974,9 @@ async function onConnectionEstablished(room, displayName) {
       console.log('[JitsiBridge] p2pJingleSession:', !!conference.p2pJingleSession);
       updateStatus('Joined room: ' + room);
 
+      // Show waiting message if we're alone in the room
+      showWaitingForPeer();
+
       // Log codec information for debugging
       try {
         const localTracks = conference.getLocalTracks();
@@ -923,6 +998,18 @@ async function onConnectionEstablished(room, displayName) {
         console.log('[JitsiBridge] Could not log track info:', e);
       }
 
+      // Set sender video constraint to match canvas resolution
+      // This helps Jitsi's quality controller know what resolution we're sending
+      if (videoSourceMode === 'canvas' && canvas.width > 0) {
+        try {
+          const senderHeight = canvas.height || 720;
+          console.log('[JitsiBridge] Setting sender video constraint:', senderHeight);
+          conference.setSenderVideoConstraint(senderHeight);
+        } catch (e) {
+          console.warn('[JitsiBridge] Could not set sender constraint:', e);
+        }
+      }
+
       // Enable E2EE if configured
       if (e2eeConfig.enabled && e2eeConfig.passphrase) {
         try {
@@ -933,11 +1020,15 @@ async function onConnectionEstablished(room, displayName) {
         }
       }
 
+      // Start WebRTC stats collector to track encoder performance
+      startRtcStatsCollector();
+
       notifyFlutter('joined', { room: room, e2ee: e2eeConfig.enabled });
     });
 
     conference.on(JitsiMeetJS.events.conference.CONFERENCE_LEFT, () => {
       isJoined = false;
+      stopRtcStatsCollector();  // Stop WebRTC stats collection
       updateStatus('Left room');
       notifyFlutter('left', {});
     });
@@ -963,6 +1054,11 @@ async function onConnectionEstablished(room, displayName) {
       remoteParticipantCount = Math.max(0, remoteParticipantCount - 1);
       console.log('[JitsiBridge] Peer left, count:', remoteParticipantCount);
       notifyFlutter('participantLeft', { id: id });
+
+      // If no more peers, switch back to full-screen local video
+      if (remoteParticipantCount === 0) {
+        updateVideoLayout(false);
+      }
     });
 
     conference.on(JitsiMeetJS.events.conference.TRACK_ADDED, (track) => {
@@ -970,6 +1066,28 @@ async function onConnectionEstablished(room, displayName) {
       console.log('[JitsiBridge] === REMOTE TRACK_ADDED ===');
       console.log('[JitsiBridge] Remote track type:', track.getType(), 'from:', track.getParticipantId());
       console.log('[JitsiBridge] At TRACK_ADDED - jvbJingleSession:', !!conference.jvbJingleSession);
+
+      // Attach remote video track to the video element
+      if (track.getType() === 'video') {
+        const remoteVideo = document.getElementById('remoteVideo');
+        if (remoteVideo) {
+          track.attach(remoteVideo);
+          console.log('[JitsiBridge] Remote video attached');
+          updateVideoLayout(true);
+        }
+      }
+
+      // Attach remote audio track (will play through default audio output)
+      if (track.getType() === 'audio') {
+        // Create a temporary audio element for remote audio
+        const audioEl = document.createElement('audio');
+        audioEl.id = 'remoteAudio_' + track.getParticipantId();
+        audioEl.autoplay = true;
+        document.body.appendChild(audioEl);
+        track.attach(audioEl);
+        console.log('[JitsiBridge] Remote audio attached');
+      }
+
       notifyFlutter('remoteTrackAdded', {
         participantId: track.getParticipantId(),
         type: track.getType()
@@ -978,6 +1096,26 @@ async function onConnectionEstablished(room, displayName) {
 
     conference.on(JitsiMeetJS.events.conference.TRACK_REMOVED, (track) => {
       if (track.isLocal()) return;
+
+      // Detach remote video
+      if (track.getType() === 'video') {
+        const remoteVideo = document.getElementById('remoteVideo');
+        if (remoteVideo) {
+          track.detach(remoteVideo);
+          console.log('[JitsiBridge] Remote video detached');
+        }
+      }
+
+      // Remove remote audio element
+      if (track.getType() === 'audio') {
+        const audioEl = document.getElementById('remoteAudio_' + track.getParticipantId());
+        if (audioEl) {
+          track.detach(audioEl);
+          audioEl.remove();
+          console.log('[JitsiBridge] Remote audio detached');
+        }
+      }
+
       notifyFlutter('remoteTrackRemoved', {
         participantId: track.getParticipantId(),
         type: track.getType()
@@ -1036,6 +1174,7 @@ function getStats() {
   const avgArrivalMs = frameArrivalIntervals.length > 0
     ? Math.round(frameArrivalIntervals.reduce((a, b) => a + b, 0) / frameArrivalIntervals.length)
     : 0;
+  const avgLatencyMs = latencyMeasurements > 0 ? Math.round(totalFrameLatencyMs / latencyMeasurements) : 0;
 
   // For camera mode, get resolution from camera track
   let resolution = canvas.width + 'x' + canvas.height;
@@ -1065,6 +1204,9 @@ function getStats() {
     lastDecodeMs: lastDecodeTimeMs,
     avgDecodeMs: avgDecodeMs,
     avgArrivalMs: avgArrivalMs,
+    lastLatencyMs: lastFrameLatencyMs,
+    avgLatencyMs: avgLatencyMs,
+    maxLatencyMs: maxFrameLatencyMs,
     totalBytes: totalBytesReceived,
     isJoined: isJoined,
     hasAudioTrack: localAudioTrack !== null,
@@ -1072,8 +1214,111 @@ function getStats() {
     isE2EEEnabled: isE2EEEnabled,
     wsConnected: wsConnected,
     videoSourceMode: videoSourceMode,
-    hasCameraStream: cameraStream !== null
+    hasCameraStream: cameraStream !== null,
+    // WebRTC encoder stats (shows where backup may occur)
+    rtcFramesEncoded: rtcFramesEncoded,
+    rtcFramesSent: rtcFramesSent,
+    rtcFramesPending: Math.max(0, rtcFramesEncoded - rtcFramesSent),  // Frames in encoder queue
+    rtcQualityLimitation: rtcQualityLimitationReason,
+    rtcEncoderImpl: rtcEncoderImpl,
+    rtcEncodeWidth: rtcEncodeWidth,
+    rtcEncodeHeight: rtcEncodeHeight,
+    rtcEncodeFps: rtcEncodeFps,
+    rtcBytesSent: rtcBytesSent,
+    rtcRetransmits: rtcRetransmittedPackets
   };
+}
+
+// Collect WebRTC encoder stats from peer connection
+async function collectRtcStats() {
+  if (!conference || !isJoined) return;
+
+  try {
+    // Try multiple paths to find the RTCPeerConnection
+    let pc = null;
+
+    // Path 1: JVB Jingle session (most common for server-based calls)
+    const jvbSession = conference.jvbJingleSession;
+    if (jvbSession?.peerconnection) {
+      pc = jvbSession.peerconnection.peerconnection || jvbSession.peerconnection;
+    }
+
+    // Path 2: P2P Jingle session
+    if (!pc) {
+      const p2pSession = conference.p2pJingleSession;
+      if (p2pSession?.peerconnection) {
+        pc = p2pSession.peerconnection.peerconnection || p2pSession.peerconnection;
+      }
+    }
+
+    // Path 3: conference.rtc.peerConnections (lib-jitsi-meet internal)
+    if (!pc && conference.rtc?.peerConnections) {
+      // peerConnections is a Map, get first one
+      const peerConns = conference.rtc.peerConnections;
+      if (peerConns.size > 0) {
+        const firstEntry = peerConns.values().next().value;
+        if (firstEntry) {
+          pc = firstEntry.peerconnection || firstEntry;
+        }
+      }
+    }
+
+    if (!pc || typeof pc.getStats !== 'function') return;
+
+    const stats = await pc.getStats();
+    let foundOutboundVideo = false;
+    stats.forEach(report => {
+      if (report.type === 'outbound-rtp' && report.kind === 'video') {
+        foundOutboundVideo = true;
+        // Core encoder stats
+        rtcFramesEncoded = report.framesEncoded || 0;
+        rtcFramesSent = report.framesSent || 0;
+        rtcQualityLimitationReason = report.qualityLimitationReason || 'none';
+        rtcEncoderImpl = report.encoderImplementation || 'unknown';
+        rtcEncodeWidth = report.frameWidth || 0;
+        rtcEncodeHeight = report.frameHeight || 0;
+        rtcEncodeFps = report.framesPerSecond || 0;
+        rtcBytesSent = report.bytesSent || 0;
+        rtcPacketsSent = report.packetsSent || 0;
+        rtcRetransmittedPackets = report.retransmittedPacketsSent || 0;
+
+        // Debug log once per 10 collections when we have stats
+        if (rtcFramesEncoded > 0 && rtcFramesEncoded % 100 < 10) {
+          console.log('[JitsiBridge] RTC stats: enc=' + rtcFramesEncoded + ' sent=' + rtcFramesSent +
+            ' encoder=' + rtcEncoderImpl + ' ' + rtcEncodeWidth + 'x' + rtcEncodeHeight);
+        }
+      }
+    });
+
+    // Debug: log if no outbound video found (only first few times)
+    if (!foundOutboundVideo && rtcFramesEncoded === 0) {
+      // Count types of stats we have
+      let statTypes = {};
+      stats.forEach(r => {
+        statTypes[r.type] = (statTypes[r.type] || 0) + 1;
+      });
+      if (Math.random() < 0.1) {  // 10% chance to log to avoid spam
+        console.log('[JitsiBridge] No outbound-rtp video. Stats types:', JSON.stringify(statTypes));
+      }
+    }
+  } catch (e) {
+    console.log('[JitsiBridge] RTC stats error:', e.message);
+  }
+}
+
+// Start periodic WebRTC stats collection
+function startRtcStatsCollector() {
+  stopRtcStatsCollector();  // Clear any existing
+  rtcStatsCollectorInterval = setInterval(collectRtcStats, 1000);  // Every 1 second
+  console.log('[JitsiBridge] Started WebRTC stats collector');
+}
+
+// Stop WebRTC stats collection
+function stopRtcStatsCollector() {
+  if (rtcStatsCollectorInterval) {
+    clearInterval(rtcStatsCollectorInterval);
+    rtcStatsCollectorInterval = null;
+  }
 }
 
 // Set canvas resolution
@@ -1312,6 +1557,11 @@ async function leaveRoom() {
     e2eeConfig = { enabled: false, passphrase: '' };
     remoteParticipantCount = 0;
     videoTrackStarted = false;
+
+    // Reset video layout to local-only mode
+    updateVideoLayout(false);
+    const waitingMessage = document.getElementById('waitingMessage');
+    if (waitingMessage) waitingMessage.classList.remove('active');
 
     // Stop canvas stream if exists
     if (canvasStream) {
@@ -1613,12 +1863,26 @@ async function startVideoTrack() {
       console.log('[JitsiBridge] Using canvas captureStream for glasses');
       console.log('[JitsiBridge] Canvas dimensions:', canvas.width, 'x', canvas.height);
       canvasStream = canvas.captureStream(24); // 24 fps max from glasses
+
+      // Get actual canvas dimensions for constraints
+      const canvasWidth = canvas.width || 504;
+      const canvasHeight = canvas.height || 896;
+
       videoTrackInfo = [{
         stream: canvasStream,
+        track: canvasStream.getVideoTracks()[0],
         sourceType: 'canvas',
         mediaType: 'video',
-        videoType: 'camera'  // Must be 'camera' - 'desktop' not supported in WebView
+        videoType: 'camera',  // Must be 'camera' - 'desktop' not supported in WebView
+        // Include constraints to help WebRTC target the correct resolution
+        // No min values - let SDK adjust as needed for bandwidth
+        constraints: {
+          width: { ideal: canvasWidth },
+          height: { ideal: canvasHeight },
+          frameRate: { ideal: 24 }
+        }
       }];
+      console.log('[JitsiBridge] Canvas track constraints:', canvasWidth, 'x', canvasHeight, '@ 24fps');
     }
 
     console.log('[JitsiBridge] Creating Jitsi local track from stream...');

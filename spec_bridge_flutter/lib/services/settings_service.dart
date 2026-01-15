@@ -10,6 +10,7 @@ class SettingsService extends ChangeNotifier {
   static const _keyShowPipelineStats = 'show_pipeline_stats';
   static const _keyDefaultAudioOutput = 'default_audio_output';
   static const _keyDefaultVideoQuality = 'default_video_quality';
+  static const _keyDefaultFrameRate = 'default_frame_rate';
   static const _keyUseNativeFrameServer = 'use_native_frame_server';
   static const _keyGlassesCameraPermissionGranted = 'glasses_camera_permission_granted';
 
@@ -29,18 +30,27 @@ class SettingsService extends ChangeNotifier {
     final audioOutput = audioOutputStr != null
         ? AudioOutput.values.firstWhere(
             (e) => e.name == audioOutputStr,
-            orElse: () => AudioOutput.phoneSpeaker,
+            orElse: () => AudioOutput.speakerphone,
           )
-        : AudioOutput.phoneSpeaker;
+        : AudioOutput.speakerphone;
 
-    // Parse video quality enum
+    // Parse video quality enum (default LOW for better BT bandwidth)
     final videoQualityStr = prefs.getString(_keyDefaultVideoQuality);
     final videoQuality = videoQualityStr != null
         ? VideoQuality.values.firstWhere(
             (e) => e.name == videoQualityStr,
-            orElse: () => VideoQuality.medium,
+            orElse: () => VideoQuality.low,
           )
-        : VideoQuality.medium;
+        : VideoQuality.low;
+
+    // Parse frame rate enum (default to 15fps for stable Bluetooth)
+    final frameRateStr = prefs.getString(_keyDefaultFrameRate);
+    final frameRate = frameRateStr != null
+        ? TargetFrameRate.values.firstWhere(
+            (e) => e.name == frameRateStr,
+            orElse: () => TargetFrameRate.fps15,
+          )
+        : TargetFrameRate.fps15;
 
     _settings = AppSettings(
       jitsiMode: JitsiMode.libJitsiMeet, // Only lib-jitsi-meet mode now
@@ -51,6 +61,7 @@ class SettingsService extends ChangeNotifier {
       showPipelineStats: prefs.getBool(_keyShowPipelineStats) ?? true,
       defaultAudioOutput: audioOutput,
       defaultVideoQuality: videoQuality,
+      defaultFrameRate: frameRate,
       useNativeFrameServer: prefs.getBool(_keyUseNativeFrameServer) ?? true,
     );
 
@@ -103,6 +114,13 @@ class SettingsService extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_keyDefaultVideoQuality, quality.name);
     _settings = _settings.copyWith(defaultVideoQuality: quality);
+    notifyListeners();
+  }
+
+  Future<void> setDefaultFrameRate(TargetFrameRate frameRate) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keyDefaultFrameRate, frameRate.name);
+    _settings = _settings.copyWith(defaultFrameRate: frameRate);
     notifyListeners();
   }
 

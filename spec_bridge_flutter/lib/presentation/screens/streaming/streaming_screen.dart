@@ -49,10 +49,12 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
   }
 
   void _initializeAndStart() {
-    // Configure StreamService with lib-jitsi-meet service
+    // Configure StreamService with lib-jitsi-meet service and native channel
     final streamService = context.read<StreamService>();
     final libJitsiService = context.read<LibJitsiService>();
+    final nativeChannel = context.read<MetaDATChannel>();
     streamService.setLibJitsiService(libJitsiService);
+    streamService.setNativeChannel(nativeChannel);
 
     setState(() {}); // Trigger rebuild to show WebView
 
@@ -132,6 +134,7 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
         widget.config,
         audioOutput: settings.defaultAudioOutput,
         videoQuality: settings.defaultVideoQuality,
+        frameRate: settings.defaultFrameRate.value,
         useNativeFrameServer: settings.useNativeFrameServer,
       );
       if (mounted) {
@@ -174,13 +177,18 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
             child: Column(
               children: [
                 RadioListTile<AudioOutput>(
-                  title: const Text('Phone Speaker'),
-                  subtitle: const Text('Better video quality'),
-                  value: AudioOutput.phoneSpeaker,
+                  title: const Text('Speakerphone'),
+                  subtitle: const Text('Loud hands-free, max video quality'),
+                  value: AudioOutput.speakerphone,
+                ),
+                RadioListTile<AudioOutput>(
+                  title: const Text('Earpiece'),
+                  subtitle: const Text('Quiet hold-to-ear, max video quality'),
+                  value: AudioOutput.earpiece,
                 ),
                 RadioListTile<AudioOutput>(
                   title: const Text('Glasses'),
-                  subtitle: const Text('May reduce video frame rate'),
+                  subtitle: const Text('Reduces video to 2fps'),
                   value: AudioOutput.glasses,
                 ),
               ],
@@ -431,14 +439,24 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
           // Audio output picker
           Consumer<StreamService>(
             builder: (context, streamService, _) {
-              final isGlassesAudio = streamService.currentAudioOutput == AudioOutput.glasses;
+              final output = streamService.currentAudioOutput;
+              final IconData icon;
+              final String tooltip;
+              switch (output) {
+                case AudioOutput.speakerphone:
+                  icon = Icons.volume_up;
+                  tooltip = 'Audio: Speakerphone';
+                case AudioOutput.earpiece:
+                  icon = Icons.phone_in_talk;
+                  tooltip = 'Audio: Earpiece';
+                case AudioOutput.glasses:
+                  icon = Icons.headphones;
+                  tooltip = 'Audio: Glasses';
+              }
               return IconButton(
-                icon: Icon(
-                  isGlassesAudio ? Icons.headphones : Icons.volume_up,
-                  color: Colors.white,
-                ),
+                icon: Icon(icon, color: Colors.white),
                 onPressed: _showAudioOutputPicker,
-                tooltip: isGlassesAudio ? 'Audio: Glasses' : 'Audio: Speaker',
+                tooltip: tooltip,
               );
             },
           ),

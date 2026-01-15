@@ -15,6 +15,14 @@ abstract class BluetoothAudioChannel {
   /// Check if a Bluetooth audio device is currently active
   Future<bool> isBluetoothAudioActive();
 
+  /// Force audio to use phone's built-in microphone instead of Bluetooth.
+  /// This prevents Bluetooth SCO from competing with glasses video stream.
+  Future<bool> forcePhoneMic();
+
+  /// Set phone audio mode to speakerphone or earpiece.
+  /// @param mode Either "speakerphone" for loud hands-free or "earpiece" for quiet hold-to-ear
+  Future<bool> setPhoneAudioMode(String mode);
+
   /// Stream of Bluetooth audio device connection changes
   Stream<BluetoothAudioEvent> get audioDeviceChanges;
 }
@@ -127,6 +135,21 @@ class BluetoothAudioChannelImpl implements BluetoothAudioChannel {
   Future<bool> isBluetoothAudioActive() async {
     final result = await _methodChannel.invokeMethod<bool>(
       'isBluetoothAudioActive',
+    );
+    return result ?? false;
+  }
+
+  @override
+  Future<bool> forcePhoneMic() async {
+    final result = await _methodChannel.invokeMethod<bool>('forcePhoneMic');
+    return result ?? false;
+  }
+
+  @override
+  Future<bool> setPhoneAudioMode(String mode) async {
+    final result = await _methodChannel.invokeMethod<bool>(
+      'setPhoneAudioMode',
+      {'mode': mode},
     );
     return result ?? false;
   }

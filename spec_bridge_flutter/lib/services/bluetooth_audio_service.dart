@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import '../data/models/app_settings.dart';
 import 'platform_channels/bluetooth_audio_channel.dart';
 
 /// Service for managing Bluetooth audio routing to Meta glasses
@@ -77,6 +78,58 @@ class BluetoothAudioService extends ChangeNotifier {
       notifyListeners();
     } catch (e) {
       debugPrint('Failed to clear audio device: $e');
+    }
+  }
+
+  /// Force audio to use phone's built-in microphone instead of Bluetooth.
+  /// This prevents Bluetooth SCO from competing with glasses video stream.
+  /// Call this BEFORE creating WebRTC audio tracks.
+  Future<bool> forcePhoneMic() async {
+    try {
+      final success = await _channel.forcePhoneMic();
+      if (success) {
+        _activeDevice = null;
+        notifyListeners();
+      }
+      debugPrint('Force phone mic: $success');
+      return success;
+    } catch (e) {
+      debugPrint('Failed to force phone mic: $e');
+      return false;
+    }
+  }
+
+  /// Set audio output based on AudioOutput enum.
+  /// - speakerphone: Loud hands-free mode via built-in speaker
+  /// - earpiece: Quiet hold-to-ear mode via built-in earpiece
+  /// - glasses: Route to Meta glasses via Bluetooth (reduces video to 2fps)
+  Future<bool> setAudioOutput(AudioOutput output) async {
+    try {
+      switch (output) {
+        case AudioOutput.speakerphone:
+          final success = await _channel.setPhoneAudioMode('speakerphone');
+          if (success) {
+            _activeDevice = null;
+            notifyListeners();
+          }
+          debugPrint('Set audio to speakerphone: $success');
+          return success;
+
+        case AudioOutput.earpiece:
+          final success = await _channel.setPhoneAudioMode('earpiece');
+          if (success) {
+            _activeDevice = null;
+            notifyListeners();
+          }
+          debugPrint('Set audio to earpiece: $success');
+          return success;
+
+        case AudioOutput.glasses:
+          return await autoRouteToGlasses();
+      }
+    } catch (e) {
+      debugPrint('Failed to set audio output: $e');
+      return false;
     }
   }
 

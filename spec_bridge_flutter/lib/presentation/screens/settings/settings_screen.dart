@@ -44,11 +44,46 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _videoQualityLabel(VideoQuality quality) {
     switch (quality) {
       case VideoQuality.low:
-        return 'Low (better for unstable connections)';
+        return 'Low (recommended for Bluetooth)';
       case VideoQuality.medium:
-        return 'Medium (recommended)';
+        return 'Medium (may cause fps drops)';
       case VideoQuality.high:
-        return 'High (best quality)';
+        return 'High (requires strong connection)';
+    }
+  }
+
+  String _audioOutputLabel(AudioOutput output) {
+    switch (output) {
+      case AudioOutput.speakerphone:
+        return 'Speakerphone (max video quality)';
+      case AudioOutput.earpiece:
+        return 'Earpiece (max video quality)';
+      case AudioOutput.glasses:
+        return 'Glasses (reduces video to 2fps)';
+    }
+  }
+
+  IconData _audioOutputIcon(AudioOutput output) {
+    switch (output) {
+      case AudioOutput.speakerphone:
+        return Icons.volume_up;
+      case AudioOutput.earpiece:
+        return Icons.phone_in_talk;
+      case AudioOutput.glasses:
+        return Icons.headphones;
+    }
+  }
+
+  String _frameRateLabel(TargetFrameRate frameRate) {
+    switch (frameRate) {
+      case TargetFrameRate.fps30:
+        return '30 fps (requires WiFi - not available)';
+      case TargetFrameRate.fps24:
+        return '24 fps (may drop on Bluetooth)';
+      case TargetFrameRate.fps15:
+        return '15 fps (recommended for Bluetooth)';
+      case TargetFrameRate.fps7:
+        return '7 fps (guaranteed stable)';
     }
   }
 
@@ -80,13 +115,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: Column(
               children: [
                 RadioListTile<AudioOutput>(
-                  title: const Text('Phone Speaker'),
-                  subtitle: const Text('Best for glasses video streaming'),
-                  value: AudioOutput.phoneSpeaker,
+                  title: const Text('Speakerphone'),
+                  subtitle: const Text('Loud hands-free, max video quality'),
+                  value: AudioOutput.speakerphone,
+                ),
+                RadioListTile<AudioOutput>(
+                  title: const Text('Earpiece'),
+                  subtitle: const Text('Quiet hold-to-ear, max video quality'),
+                  value: AudioOutput.earpiece,
                 ),
                 RadioListTile<AudioOutput>(
                   title: const Text('Glasses'),
-                  subtitle: const Text('May reduce video frame rate due to Bluetooth bandwidth'),
+                  subtitle: const Text('Reduces video to 2fps (Bluetooth bandwidth)'),
                   value: AudioOutput.glasses,
                 ),
               ],
@@ -127,18 +167,78 @@ class _SettingsScreenState extends State<SettingsScreen> {
               children: [
                 RadioListTile<VideoQuality>(
                   title: const Text('Low'),
-                  subtitle: const Text('Lower bandwidth, better for unstable connections'),
+                  subtitle: const Text('Recommended - best for Bluetooth bandwidth'),
                   value: VideoQuality.low,
                 ),
                 RadioListTile<VideoQuality>(
                   title: const Text('Medium'),
-                  subtitle: const Text('Balanced quality (recommended)'),
+                  subtitle: const Text('Higher quality, may cause fps drops on BT'),
                   value: VideoQuality.medium,
                 ),
                 RadioListTile<VideoQuality>(
                   title: const Text('High'),
-                  subtitle: const Text('Best quality, higher bandwidth usage'),
+                  subtitle: const Text('Best quality, requires strong connection'),
                   value: VideoQuality.high,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
+      ),
+    );
+  }
+
+  void _showFrameRatePicker(
+    BuildContext context,
+    SettingsService settingsService,
+    AppSettings settings,
+  ) {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Padding(
+            padding: EdgeInsets.all(16),
+            child: Text(
+              'Target Frame Rate',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+          ),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16),
+            child: Text(
+              'Meta glasses use Bluetooth which limits bandwidth. '
+              'Lower frame rates are more stable.',
+              style: TextStyle(fontSize: 13, color: Colors.grey),
+            ),
+          ),
+          const SizedBox(height: 8),
+          RadioGroup<TargetFrameRate>(
+            groupValue: settings.defaultFrameRate,
+            onChanged: (value) {
+              if (value != null) {
+                settingsService.setDefaultFrameRate(value);
+                Navigator.pop(context);
+              }
+            },
+            child: Column(
+              children: [
+                RadioListTile<TargetFrameRate>(
+                  title: const Text('24 fps'),
+                  subtitle: const Text('High - may drop if Bluetooth congested'),
+                  value: TargetFrameRate.fps24,
+                ),
+                RadioListTile<TargetFrameRate>(
+                  title: const Text('15 fps'),
+                  subtitle: const Text('Recommended - stable on Bluetooth'),
+                  value: TargetFrameRate.fps15,
+                ),
+                RadioListTile<TargetFrameRate>(
+                  title: const Text('7 fps'),
+                  subtitle: const Text('Low - guaranteed stable, fallback rate'),
+                  value: TargetFrameRate.fps7,
                 ),
               ],
             ),
@@ -246,13 +346,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
               const Divider(),
               const _SectionHeader('Streaming Defaults'),
               ListTile(
-                leading: const Icon(Icons.volume_up),
+                leading: Icon(_audioOutputIcon(settings.defaultAudioOutput)),
                 title: const Text('Default Audio Output'),
-                subtitle: Text(
-                  settings.defaultAudioOutput == AudioOutput.phoneSpeaker
-                      ? 'Phone Speaker'
-                      : 'Glasses (may reduce video frame rate)',
-                ),
+                subtitle: Text(_audioOutputLabel(settings.defaultAudioOutput)),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => _showAudioOutputPicker(context, settingsService, settings),
               ),
@@ -262,6 +358,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 subtitle: Text(_videoQualityLabel(settings.defaultVideoQuality)),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => _showVideoQualityPicker(context, settingsService, settings),
+              ),
+              ListTile(
+                leading: const Icon(Icons.speed),
+                title: const Text('Target Frame Rate'),
+                subtitle: Text(_frameRateLabel(settings.defaultFrameRate)),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _showFrameRatePicker(context, settingsService, settings),
               ),
               const SizedBox(height: 16),
               const Divider(),

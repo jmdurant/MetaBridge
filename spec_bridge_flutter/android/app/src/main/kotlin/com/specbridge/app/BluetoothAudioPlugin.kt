@@ -59,6 +59,15 @@ class BluetoothAudioPlugin(
             }
             "clearAudioDevice" -> clearAudioDevice(result)
             "isBluetoothAudioActive" -> isBluetoothAudioActive(result)
+            "forcePhoneMic" -> forcePhoneMic(result)
+            "setPhoneAudioMode" -> {
+                val mode = call.argument<String>("mode")
+                if (mode != null) {
+                    setPhoneAudioMode(mode, result)
+                } else {
+                    result.error("INVALID_ARGUMENT", "mode is required", null)
+                }
+            }
             else -> result.notImplemented()
         }
     }
@@ -157,6 +166,127 @@ class BluetoothAudioPlugin(
         } catch (e: Exception) {
             Log.e(TAG, "Failed to check Bluetooth audio status", e)
             result.error("CHECK_STATUS_ERROR", e.message, null)
+        }
+    }
+
+    /**
+     * Set phone audio mode to speakerphone or earpiece.
+     * Uses setCommunicationDevice() API (Android 12+).
+     * @param mode "speakerphone" for loud hands-free, "earpiece" for quiet hold-to-ear
+     */
+    private fun setPhoneAudioMode(mode: String, result: MethodChannel.Result) {
+        try {
+            Log.d(TAG, "Setting phone audio mode: $mode")
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                audioManager.clearCommunicationDevice()
+
+                val availableDevices = audioManager.availableCommunicationDevices
+                Log.d(TAG, "Available communication devices: ${availableDevices.map { "${it.productName} (${it.type})" }}")
+
+                val targetType = when (mode) {
+                    "speakerphone" -> AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                    "earpiece" -> AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+                    else -> {
+                        result.error("INVALID_MODE", "Mode must be 'speakerphone' or 'earpiece'", null)
+                        return
+                    }
+                }
+
+                val targetDevice = availableDevices.find { it.type == targetType }
+                if (targetDevice != null) {
+                    val success = audioManager.setCommunicationDevice(targetDevice)
+                    Log.d(TAG, "setCommunicationDevice(${targetDevice.productName}): $success")
+                    result.success(success)
+                } else {
+                    // Fallback to the other option if target not found
+                    val fallbackType = if (targetType == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
+                        AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+                    } else {
+                        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                    }
+                    val fallbackDevice = availableDevices.find { it.type == fallbackType }
+                    if (fallbackDevice != null) {
+                        val success = audioManager.setCommunicationDevice(fallbackDevice)
+                        Log.w(TAG, "Target $mode not found, using fallback ${fallbackDevice.productName}: $success")
+                        result.success(success)
+                    } else {
+                        Log.e(TAG, "No built-in audio device found")
+                        result.success(false)
+                    }
+                }
+            } else {
+                // Android 11 and below - use deprecated APIs
+                @Suppress("DEPRECATION")
+                audioManager.stopBluetoothSco()
+                @Suppress("DEPRECATION")
+                audioManager.isBluetoothScoOn = false
+                @Suppress("DEPRECATION")
+                audioManager.isSpeakerphoneOn = (mode == "speakerphone")
+                Log.d(TAG, "Using legacy APIs for Android ${Build.VERSION.SDK_INT}, speakerphone=${mode == "speakerphone"}")
+                result.success(true)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to set phone audio mode", e)
+            result.error("SET_PHONE_AUDIO_ERROR", e.message, null)
+        }
+    }
+
+    /**
+     * Force audio routing to phone's built-in speaker/mic.
+     * Uses setCommunicationDevice() API (Android 12+) which is the modern
+     * replacement for deprecated setSpeakerphoneOn/startBluetoothSco.
+     * This preserves Bluetooth bandwidth for glasses video streaming.
+     */
+    private fun forcePhoneMic(result: MethodChannel.Result) {
+        try {
+            Log.d(TAG, "Forcing phone speaker/mic mode via setCommunicationDevice")
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                // Android 12+ - use setCommunicationDevice (the modern API)
+                // First clear any existing communication device (e.g., Bluetooth)
+                audioManager.clearCommunicationDevice()
+
+                // Find the built-in speaker device
+                val availableDevices = audioManager.availableCommunicationDevices
+                Log.d(TAG, "Available communication devices: ${availableDevices.map { "${it.productName} (${it.type})" }}")
+
+                val speakerDevice = availableDevices.find { device ->
+                    device.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                }
+
+                if (speakerDevice != null) {
+                    val success = audioManager.setCommunicationDevice(speakerDevice)
+                    Log.d(TAG, "setCommunicationDevice(${speakerDevice.productName}): $success")
+                    result.success(success)
+                } else {
+                    // Fallback: try built-in earpiece
+                    val earpieceDevice = availableDevices.find { device ->
+                        device.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+                    }
+                    if (earpieceDevice != null) {
+                        val success = audioManager.setCommunicationDevice(earpieceDevice)
+                        Log.d(TAG, "setCommunicationDevice(${earpieceDevice.productName}): $success")
+                        result.success(success)
+                    } else {
+                        Log.w(TAG, "No built-in speaker/earpiece found, clearing BT device only")
+                        result.success(true) // At least we cleared BT
+                    }
+                }
+            } else {
+                // Android 11 and below - use deprecated APIs (they still work on older versions)
+                @Suppress("DEPRECATION")
+                audioManager.stopBluetoothSco()
+                @Suppress("DEPRECATION")
+                audioManager.isBluetoothScoOn = false
+                @Suppress("DEPRECATION")
+                audioManager.isSpeakerphoneOn = true
+                Log.d(TAG, "Using legacy APIs for Android ${Build.VERSION.SDK_INT}")
+                result.success(true)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to force phone mic", e)
+            result.error("FORCE_PHONE_MIC_ERROR", e.message, null)
         }
     }
 
