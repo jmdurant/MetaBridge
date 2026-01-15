@@ -78,15 +78,41 @@ class MetaDATPlugin: NSObject {
             }
 
         case "startStreaming":
-            let videoSource = (call.arguments as? [String: Any])?["videoSource"] as? String ?? "glasses"
+            let args = call.arguments as? [String: Any]
+            let videoSource = args?["videoSource"] as? String ?? "glasses"
+            let videoQuality = args?["videoQuality"] as? String ?? "medium"
+            let frameRate = args?["frameRate"] as? Int ?? 24
             Task {
-                await startStreaming(videoSource: videoSource, result: result)
+                await startStreaming(videoSource: videoSource, videoQuality: videoQuality, frameRate: frameRate, result: result)
             }
 
         case "stopStreaming":
             Task {
                 await stopStreaming(result: result)
             }
+
+        case "disconnect":
+            Task {
+                await disconnect(result: result)
+            }
+
+        case "setVideoSource":
+            if let args = call.arguments as? [String: Any],
+               let source = args["source"] as? String {
+                setVideoSource(source: source, result: result)
+            } else {
+                result(FlutterError(code: "INVALID_ARGS", message: "source required", details: nil))
+            }
+
+        case "getStreamStats":
+            getStreamStats(result: result)
+
+        case "setNativeServerEnabled":
+            // No-op on iOS - we use Unix socket instead of WebSocket server
+            result(true)
+
+        case "resetFrameServer":
+            resetFrameServer(result: result)
 
         default:
             result(FlutterMethodNotImplemented)
@@ -160,13 +186,25 @@ class MetaDATPlugin: NSObject {
     // Camera capture manager for phone cameras
     private var cameraCaptureManager: CameraCaptureManager?
     private var currentVideoSource: String = "glasses"
+    private var currentVideoQuality: String = "medium"
+    private var currentFrameRate: Int = 24
+
+    // Stats tracking
+    private var framesReceived: Int = 0
+    private var framesProcessed: Int = 0
+    private var streamStartTime: Date?
 
     // MARK: - Streaming
 
-    private func startStreaming(videoSource: String, result: @escaping FlutterResult) async {
+    private func startStreaming(videoSource: String, videoQuality: String, frameRate: Int, result: @escaping FlutterResult) async {
         currentVideoSource = videoSource
+        currentVideoQuality = videoQuality
+        currentFrameRate = frameRate
         sendEvent(["type": "streamStatus", "status": "starting"])
         frameCount = 0
+        framesReceived = 0
+        framesProcessed = 0
+        streamStartTime = Date()
 
         // Configure audio session for Bluetooth
         configureAudio()
@@ -175,9 +213,11 @@ class MetaDATPlugin: NSObject {
         jitsiFrameInjector = JitsiFrameInjector()
         jitsiFrameInjector?.start()
 
+        print("[MetaDATPlugin] Starting stream: source=\(videoSource), quality=\(videoQuality), fps=\(frameRate)")
+
         switch videoSource {
         case "glasses":
-            await startGlassesStreaming(result: result)
+            await startGlassesStreaming(videoQuality: videoQuality, frameRate: frameRate, result: result)
         case "backCamera":
             startCameraStreaming(useFrontCamera: false, result: result)
         case "frontCamera":
@@ -189,15 +229,32 @@ class MetaDATPlugin: NSObject {
         }
     }
 
-    private func startGlassesStreaming(result: @escaping FlutterResult) async {
+    private func startGlassesStreaming(videoQuality: String, frameRate: Int, result: @escaping FlutterResult) async {
         // Create device selector (auto-selects available device)
         let selector = AutoDeviceSelector(wearables: Wearables.shared)
 
-        // Configure stream: 720p @ 24fps raw video
+        // Map video quality string to SDK resolution
+        let resolution: StreamSessionConfig.Resolution
+        switch videoQuality.lowercased() {
+        case "low":
+            resolution = .low
+        case "high":
+            resolution = .high
+        default:
+            resolution = .medium
+        }
+
+        // Coerce frame rate to valid SDK values: 30, 24, 15, 7, 2
+        let validFpsValues = [30, 24, 15, 7, 2]
+        let fps = validFpsValues.min(by: { abs($0 - frameRate) < abs($1 - frameRate) }) ?? 24
+
+        print("[MetaDATPlugin] Using resolution: \(resolution), fps: \(fps) (requested: \(frameRate))")
+
+        // Configure stream with parameters
         let config = StreamSessionConfig(
             videoCodec: .raw,
-            resolution: .high,
-            frameRate: 24
+            resolution: resolution,
+            frameRate: fps
         )
 
         // Create stream session
@@ -266,6 +323,60 @@ class MetaDATPlugin: NSObject {
         result(nil)
     }
 
+    private func disconnect(result: @escaping FlutterResult) async {
+        print("[MetaDATPlugin] Disconnecting from glasses...")
+
+        // Stop any active streaming
+        await streamSession?.stop()
+        videoFrameToken = nil
+        stateToken = nil
+        streamSession = nil
+
+        cameraCaptureManager?.stopCapture()
+        cameraCaptureManager = nil
+
+        jitsiFrameInjector?.stop()
+        jitsiFrameInjector = nil
+
+        sendEvent(["type": "connectionState", "state": "disconnected"])
+        result(nil)
+    }
+
+    private func setVideoSource(source: String, result: @escaping FlutterResult) {
+        currentVideoSource = source
+        print("[MetaDATPlugin] Video source set to: \(source)")
+        result(true)
+    }
+
+    private func getStreamStats(result: @escaping FlutterResult) {
+        let stats: [String: Any] = [
+            "framesReceived": framesReceived,
+            "framesProcessed": framesProcessed,
+            "framesSent": jitsiFrameInjector?.framesSent ?? 0,
+            "videoSource": currentVideoSource,
+            "videoQuality": currentVideoQuality,
+            "frameRate": currentFrameRate,
+            "isConnected": jitsiFrameInjector?.isConnected ?? false,
+            "streamDurationMs": streamStartTime.map { Int(Date().timeIntervalSince($0) * 1000) } ?? 0
+        ]
+        result(stats)
+    }
+
+    private func resetFrameServer(result: @escaping FlutterResult) {
+        print("[MetaDATPlugin] Resetting frame server...")
+
+        // Reset the Jitsi frame injector for clean session transition
+        jitsiFrameInjector?.stop()
+        jitsiFrameInjector = nil
+
+        // Reset counters
+        frameCount = 0
+        framesReceived = 0
+        framesProcessed = 0
+
+        result(true)
+    }
+
     private func handleSessionState(_ state: StreamSessionState) {
         let statusString: String
         switch state {
@@ -282,9 +393,11 @@ class MetaDATPlugin: NSObject {
 
     private func handleVideoFrame(_ frame: VideoFrame) {
         frameCount += 1
+        framesReceived += 1
 
         // Send to Jitsi via socket injection (uses CMSampleBuffer)
         jitsiFrameInjector?.injectFrame(frame.sampleBuffer)
+        framesProcessed += 1
 
         // Send preview to Flutter (every 3rd frame to reduce bandwidth)
         if frameCount % 3 == 0 {
@@ -292,6 +405,11 @@ class MetaDATPlugin: NSObject {
                let jpegData = image.jpegData(compressionQuality: 0.7) {
                 sendFrame(jpegData)
             }
+        }
+
+        // Log stats periodically
+        if frameCount % 100 == 0 {
+            print("[MetaDATPlugin] Frames: received=\(framesReceived), processed=\(framesProcessed), sent=\(jitsiFrameInjector?.framesSent ?? 0)")
         }
     }
 
