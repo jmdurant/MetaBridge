@@ -12,12 +12,46 @@
       background: #000;
       overflow: hidden;
     }
+
+    /* Container for video layout */
+    #videoContainer {
+      width: 100%;
+      height: 100%;
+      position: relative;
+    }
+
+    /* Remote video - main display (hidden until peer joins) */
+    #remoteVideo {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #000;
+      display: none;
+    }
+    #remoteVideo.active {
+      display: block;
+    }
+
+    /* Local video canvas - full screen when alone, thumbnail when peer connected */
     #videoCanvas {
       width: 100%;
       height: 100%;
       object-fit: contain;
       background: #000;
     }
+    #videoCanvas.thumbnail {
+      position: fixed;
+      bottom: 80px;
+      right: 16px;
+      width: 100px;
+      height: 178px;
+      border-radius: 8px;
+      border: 2px solid rgba(255,255,255,0.3);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+      z-index: 100;
+    }
+
+    /* Camera preview - same behavior as canvas */
     #cameraPreview {
       width: 100%;
       height: 100%;
@@ -25,9 +59,38 @@
       background: #000;
       display: none;
     }
+    #cameraPreview.thumbnail {
+      position: fixed;
+      bottom: 80px;
+      right: 16px;
+      width: 100px;
+      height: 178px;
+      border-radius: 8px;
+      border: 2px solid rgba(255,255,255,0.3);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+      z-index: 100;
+    }
+
     /* Show camera preview, hide canvas in camera mode */
     body.camera-mode #videoCanvas { display: none; }
     body.camera-mode #cameraPreview { display: block; }
+
+    /* Waiting for peer message */
+    #waitingMessage {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: #888;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      font-size: 18px;
+      text-align: center;
+      display: none;
+    }
+    #waitingMessage.active {
+      display: block;
+    }
+
     #status {
       position: fixed;
       top: 10px;
@@ -43,10 +106,20 @@
   </style>
 </head>
 <body>
-  <!-- Canvas matches glasses MEDIUM quality: 504x896 (portrait 9:16) -->
-  <canvas id="videoCanvas" width="504" height="896"></canvas>
-  <!-- Video element for camera preview (direct getUserMedia) -->
-  <video id="cameraPreview" autoplay playsinline muted></video>
+  <div id="videoContainer">
+    <!-- Remote peer video - main display -->
+    <video id="remoteVideo" autoplay playsinline></video>
+
+    <!-- Waiting message when in room but no peer yet -->
+    <div id="waitingMessage">Waiting for someone to join...</div>
+
+    <!-- Local video canvas (glasses frames) -->
+    <canvas id="videoCanvas" width="504" height="896"></canvas>
+
+    <!-- Camera preview (direct getUserMedia) -->
+    <video id="cameraPreview" autoplay playsinline muted></video>
+  </div>
+
   <div id="status">Initializing...</div>
 
   <!-- lib-jitsi-meet from CDN -->

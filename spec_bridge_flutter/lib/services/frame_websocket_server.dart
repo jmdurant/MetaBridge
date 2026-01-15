@@ -17,6 +17,8 @@ class FrameWebSocketServer {
   bool _isRunning = false;
   int _framesSent = 0;
   int _framesDropped = 0;
+  int _framesWithSlowSend = 0;  // Frames where send took longer than expected
+  int _lastSendTimeMs = 0;
 
   bool get isRunning => _isRunning;
   bool get hasClient => _client != null;
@@ -38,6 +40,8 @@ class FrameWebSocketServer {
       _isRunning = true;
       _framesSent = 0;
       _framesDropped = 0;
+      _framesWithSlowSend = 0;
+      _lastSendTimeMs = 0;
 
       debugPrint('FrameWebSocketServer: Started on ws://0.0.0.0:$port');
 
@@ -102,6 +106,14 @@ class FrameWebSocketServer {
     }
 
     try {
+      final now = DateTime.now().millisecondsSinceEpoch;
+
+      // Track if sends are happening slower than expected (>50ms gap indicates potential backpressure)
+      if (_lastSendTimeMs > 0 && (now - _lastSendTimeMs) > 50) {
+        _framesWithSlowSend++;
+      }
+      _lastSendTimeMs = now;
+
       _client!.add(frameData);
       _framesSent++;
 
@@ -109,7 +121,7 @@ class FrameWebSocketServer {
         debugPrint('FrameWebSocketServer: Sent first frame (${frameData.length} bytes)');
       }
       if (_framesSent % 100 == 0) {
-        debugPrint('FrameWebSocketServer: Sent $_framesSent frames, dropped $_framesDropped');
+        debugPrint('FrameWebSocketServer: Sent $_framesSent frames, dropped $_framesDropped, slow $_framesWithSlowSend');
       }
     } catch (e) {
       debugPrint('FrameWebSocketServer: Send error: $e');
@@ -139,6 +151,7 @@ class FrameWebSocketServer {
       'port': _port,
       'framesSent': _framesSent,
       'framesDropped': _framesDropped,
+      'framesWithSlowSend': _framesWithSlowSend,
     };
   }
 }

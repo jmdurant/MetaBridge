@@ -124,6 +124,26 @@ class GlassesService extends ChangeNotifier {
     await _channel.stopStreaming();
   }
 
+  /// Restart streaming with new quality/fps settings
+  /// Used when audio output changes to adjust BT bandwidth allocation
+  Future<bool> restartStreaming({
+    int width = 1280,
+    int height = 720,
+    int frameRate = 24,
+    String videoQuality = 'medium',
+  }) async {
+    debugPrint('GlassesService: Restarting stream with $videoQuality @ ${frameRate}fps');
+    await stopStreaming();
+    // Small delay to allow SDK to clean up
+    await Future.delayed(const Duration(milliseconds: 200));
+    return await startStreaming(
+      width: width,
+      height: height,
+      frameRate: frameRate,
+      videoQuality: videoQuality,
+    );
+  }
+
   /// Enable/disable native frame server (bypasses Flutter UI thread)
   Future<bool> setNativeServerEnabled(bool enabled) async {
     return await _channel.setNativeServerEnabled(enabled);

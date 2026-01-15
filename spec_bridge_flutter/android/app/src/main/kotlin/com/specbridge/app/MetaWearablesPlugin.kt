@@ -355,6 +355,7 @@ class MetaWearablesPlugin(
             stats["nativeServerPort"] = serverStats["port"] ?: 0
             stats["nativeFramesSent"] = serverStats["framesSent"] ?: 0L
             stats["nativeFramesDropped"] = serverStats["framesDropped"] ?: 0L
+            stats["nativeBackpressure"] = serverStats["framesWithBackpressure"] ?: 0L
         } ?: run {
             stats["nativeServerRunning"] = false
             stats["nativeServerHasClient"] = false

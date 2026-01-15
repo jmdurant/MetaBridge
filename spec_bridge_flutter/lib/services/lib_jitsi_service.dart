@@ -22,6 +22,9 @@ class LibJitsiStats {
   final int lastDecodeMs;
   final int avgDecodeMs;
   final int avgArrivalMs; // Average frame arrival interval
+  final int lastLatencyMs; // Last frame E2E latency (native capture → JS receive)
+  final int avgLatencyMs; // Average E2E latency
+  final int maxLatencyMs; // Max E2E latency seen
   final int totalBytes;
   final bool isJoined;
   final bool hasAudioTrack;
@@ -30,6 +33,17 @@ class LibJitsiStats {
   final bool isE2EEEnabled;
   final String videoSourceMode; // 'canvas' or 'camera'
   final bool hasCameraStream; // true if using getUserMedia
+  // WebRTC encoder stats (shows where backup may occur in encoder/network)
+  final int rtcFramesEncoded;
+  final int rtcFramesSent;
+  final int rtcFramesPending; // Frames in encoder queue
+  final String rtcQualityLimitation;
+  final String rtcEncoderImpl;
+  final int rtcEncodeWidth;
+  final int rtcEncodeHeight;
+  final int rtcEncodeFps;
+  final int rtcBytesSent;
+  final int rtcRetransmits;
 
   const LibJitsiStats({
     this.resolution = '0x0',
@@ -45,6 +59,9 @@ class LibJitsiStats {
     this.lastDecodeMs = 0,
     this.avgDecodeMs = 0,
     this.avgArrivalMs = 0,
+    this.lastLatencyMs = 0,
+    this.avgLatencyMs = 0,
+    this.maxLatencyMs = 0,
     this.totalBytes = 0,
     this.isJoined = false,
     this.hasAudioTrack = false,
@@ -53,6 +70,16 @@ class LibJitsiStats {
     this.isE2EEEnabled = false,
     this.videoSourceMode = 'canvas',
     this.hasCameraStream = false,
+    this.rtcFramesEncoded = 0,
+    this.rtcFramesSent = 0,
+    this.rtcFramesPending = 0,
+    this.rtcQualityLimitation = 'none',
+    this.rtcEncoderImpl = 'unknown',
+    this.rtcEncodeWidth = 0,
+    this.rtcEncodeHeight = 0,
+    this.rtcEncodeFps = 0,
+    this.rtcBytesSent = 0,
+    this.rtcRetransmits = 0,
   });
 
   factory LibJitsiStats.fromJson(Map<String, dynamic> json) {
@@ -70,6 +97,9 @@ class LibJitsiStats {
       lastDecodeMs: json['lastDecodeMs'] as int? ?? 0,
       avgDecodeMs: json['avgDecodeMs'] as int? ?? 0,
       avgArrivalMs: json['avgArrivalMs'] as int? ?? 0,
+      lastLatencyMs: json['lastLatencyMs'] as int? ?? 0,
+      avgLatencyMs: json['avgLatencyMs'] as int? ?? 0,
+      maxLatencyMs: json['maxLatencyMs'] as int? ?? 0,
       totalBytes: json['totalBytes'] as int? ?? 0,
       isJoined: json['isJoined'] as bool? ?? false,
       hasAudioTrack: json['hasAudioTrack'] as bool? ?? false,
@@ -78,6 +108,16 @@ class LibJitsiStats {
       isE2EEEnabled: json['isE2EEEnabled'] as bool? ?? false,
       videoSourceMode: json['videoSourceMode'] as String? ?? 'canvas',
       hasCameraStream: json['hasCameraStream'] as bool? ?? false,
+      rtcFramesEncoded: json['rtcFramesEncoded'] as int? ?? 0,
+      rtcFramesSent: json['rtcFramesSent'] as int? ?? 0,
+      rtcFramesPending: json['rtcFramesPending'] as int? ?? 0,
+      rtcQualityLimitation: json['rtcQualityLimitation'] as String? ?? 'none',
+      rtcEncoderImpl: json['rtcEncoderImpl'] as String? ?? 'unknown',
+      rtcEncodeWidth: json['rtcEncodeWidth'] as int? ?? 0,
+      rtcEncodeHeight: json['rtcEncodeHeight'] as int? ?? 0,
+      rtcEncodeFps: json['rtcEncodeFps'] as int? ?? 0,
+      rtcBytesSent: json['rtcBytesSent'] as int? ?? 0,
+      rtcRetransmits: json['rtcRetransmits'] as int? ?? 0,
     );
   }
 
@@ -228,7 +268,7 @@ class LibJitsiService extends ChangeNotifier {
         _updateState(_currentState.copyWith(isInitialized: true));
         // If we have a pending config, join now
         if (_pendingConfig != null) {
-          _joinWithConfig(_pendingConfig!);
+          _joinWithConfig(_pendingConfig!, usePhoneMic: _pendingUsePhoneMic);
         }
         break;
 
@@ -364,8 +404,11 @@ class LibJitsiService extends ChangeNotifier {
   }
 
   /// Prepare and join a meeting
-  Future<void> joinMeeting(MeetingConfig config) async {
+  /// usePhoneMic: when true (default), forces phone mic instead of Bluetooth
+  ///              to preserve Bluetooth bandwidth for glasses video streaming
+  Future<void> joinMeeting(MeetingConfig config, {bool usePhoneMic = true}) async {
     _pendingConfig = config;
+    _pendingUsePhoneMic = usePhoneMic;
     notifyListeners();
 
     // Start WebSocket server for frame transfer
@@ -374,22 +417,24 @@ class LibJitsiService extends ChangeNotifier {
     }
 
     if (_currentState.isInitialized && _controller != null) {
-      await _joinWithConfig(config);
+      await _joinWithConfig(config, usePhoneMic: usePhoneMic);
     }
     // Otherwise, will join when initialized callback fires
   }
 
-  Future<void> _joinWithConfig(MeetingConfig config) async {
+  bool _pendingUsePhoneMic = true;
+
+  Future<void> _joinWithConfig(MeetingConfig config, {bool usePhoneMic = true}) async {
     final server = config.serverUrl;
     final room = config.roomName;
     final displayName = config.displayName;
     final enableE2EE = config.enableE2EE;
     final e2eePassphrase = config.e2eePassphrase ?? '';
 
-    debugPrint('LibJitsiService: Joining $room on $server as $displayName (E2EE: $enableE2EE)');
+    debugPrint('LibJitsiService: Joining $room on $server as $displayName (E2EE: $enableE2EE, usePhoneMic: $usePhoneMic)');
 
     await _controller?.evaluateJavascript(
-      source: 'joinRoom("$server", "$room", "$displayName", $enableE2EE, "$e2eePassphrase")',
+      source: 'joinRoom("$server", "$room", "$displayName", $enableE2EE, "$e2eePassphrase", $usePhoneMic)',
     );
   }
 
@@ -456,11 +501,12 @@ class LibJitsiService extends ChangeNotifier {
 
   // Frame counter for debug logging
   int _frameSentCount = 0;
-  // Flutter side doesn't drop frames - WebSocket/JS layer handles frame pacing
-  final int _framesDropped = 0;
+  // Track frames dropped due to not being in meeting, paused, or no client
+  int _framesDropped = 0;
 
   /// Get Flutter-side frame stats
   Map<String, dynamic> getFlutterStats() {
+    final wsStats = _wsServer.getStats();
     final dropRate = (_frameSentCount + _framesDropped) > 0
         ? (_framesDropped * 100 / (_frameSentCount + _framesDropped)).round()
         : 0;
@@ -468,6 +514,7 @@ class LibJitsiService extends ChangeNotifier {
       'framesSent': _frameSentCount,
       'framesDropped': _framesDropped,
       'dropRate': dropRate,
+      'wsSlowSends': wsStats['framesWithSlowSend'] ?? 0,
     };
   }
 
@@ -479,14 +526,17 @@ class LibJitsiService extends ChangeNotifier {
     // Don't send frames when paused
     if (!_currentState.isInMeeting) {
       if (_frameSentCount == 0) debugPrint('LibJitsiService.sendFrame: not in meeting yet');
+      _framesDropped++;
       return;
     }
     if (_isPaused) {
       if (_frameSentCount == 0) debugPrint('LibJitsiService.sendFrame: WebView is paused');
+      _framesDropped++;
       return;
     }
     if (!_wsServer.hasClient) {
       if (_frameSentCount == 0) debugPrint('LibJitsiService.sendFrame: WebSocket client not connected');
+      _framesDropped++;
       return;
     }
 

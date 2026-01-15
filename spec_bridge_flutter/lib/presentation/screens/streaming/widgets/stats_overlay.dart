@@ -126,6 +126,7 @@ class _StatsOverlayState extends State<StatsOverlay> {
     final nativeServerHasClient = _nativeStats['nativeServerHasClient'] ?? false;
     final nativeFramesSent = _nativeStats['nativeFramesSent'] ?? 0;
     final nativeFramesDropped = _nativeStats['nativeFramesDropped'] ?? 0;
+    final nativeBackpressure = _nativeStats['nativeBackpressure'] ?? 0;
 
     // Extract native capture stats (glasses mode)
     final nativeReceived = _nativeStats['framesReceived'] ?? 0;
@@ -151,6 +152,7 @@ class _StatsOverlayState extends State<StatsOverlay> {
     final flutterSent = _flutterStats['framesSent'] ?? 0;
     final flutterDropped = _flutterStats['framesDropped'] ?? 0;
     final flutterDropRate = _flutterStats['dropRate'] ?? 0;
+    final flutterSlowSends = _flutterStats['wsSlowSends'] ?? 0;
 
     // Calculate EventChannel loss (only relevant if not using native server)
     final eventChannelLoss = nativeProcessed > 0
@@ -196,6 +198,8 @@ class _StatsOverlayState extends State<StatsOverlay> {
               // Capture stats - different for glasses vs camera (legacy JPEG path)
               if (isGlassesMode) ...[
                 _buildSectionLabel('Capture (I420)'),
+                _buildStatRow('SDK Interval', '${_nativeStats['avgFrameIntervalMs'] ?? 0}ms',
+                    valueColor: ((_nativeStats['avgFrameIntervalMs'] ?? 0) as num) > 50 ? Colors.orangeAccent : Colors.greenAccent),
                 _buildStatRow('Recv/Proc/Skip', '$nativeReceived/$nativeProcessed/$nativeSkipped'),
                 _buildStatRow('Skip Rate', '$nativeSkipRate%'),
                 _buildStatRow('Process Time', '${encodeTimeMs}ms (avg ${avgEncodeMs}ms)'),
@@ -215,10 +219,14 @@ class _StatsOverlayState extends State<StatsOverlay> {
               ),
               if (usingNativePath) ...[
                 _buildStatRow('Sent/Drop', '$nativeFramesSent/$nativeFramesDropped'),
+                _buildStatRow('Backpressure', '$nativeBackpressure',
+                    valueColor: nativeBackpressure > 0 ? Colors.orangeAccent : Colors.greenAccent),
               ] else ...[
                 _buildStatRow('EventCh Recv', '$flutterReceived @ ${eventChannelFps}fps'),
                 if (isGlassesMode) _buildStatRow('EventCh Loss', '$eventChannelLoss%'),
                 _buildStatRow('WS Sent/Drop', '$flutterSent/$flutterDropped'),
+                _buildStatRow('Slow Sends', '$flutterSlowSends',
+                    valueColor: flutterSlowSends > 0 ? Colors.orangeAccent : Colors.greenAccent),
               ],
               const SizedBox(height: 6),
 
@@ -230,8 +238,23 @@ class _StatsOverlayState extends State<StatsOverlay> {
               _buildStatRow('Drop (queue/stale)', '${_webViewStats.framesDroppedJs}/${_webViewStats.framesDroppedStale}'),
               _buildStatRow('Decode', '${_webViewStats.lastDecodeMs}ms (avg ${_webViewStats.avgDecodeMs}ms)'),
               _buildStatRow('Arrival Interval', '${_webViewStats.avgArrivalMs}ms'),
+              _buildStatRow('E2E Latency', '${_webViewStats.lastLatencyMs}ms (avg ${_webViewStats.avgLatencyMs}ms, max ${_webViewStats.maxLatencyMs}ms)'),
               _buildStatRow('FPS Out', '${_webViewStats.fps}'),
               _buildStatRow('Resolution', _webViewStats.resolution),
+              const SizedBox(height: 6),
+
+              // WebRTC Encoder stats (shows where backup may occur)
+              _buildSectionLabel('WebRTC Encoder'),
+              _buildStatRow('Encoder', _truncateEncoder(_webViewStats.rtcEncoderImpl)),
+              _buildStatRow('Enc/Sent', '${_webViewStats.rtcFramesEncoded}/${_webViewStats.rtcFramesSent}'),
+              _buildStatRow('Pending', '${_webViewStats.rtcFramesPending}',
+                  valueColor: _webViewStats.rtcFramesPending > 5 ? Colors.orangeAccent : Colors.greenAccent),
+              _buildStatRow('Quality Limit', _webViewStats.rtcQualityLimitation,
+                  valueColor: _webViewStats.rtcQualityLimitation == 'none' ? Colors.greenAccent : Colors.orangeAccent),
+              _buildStatRow('Enc Resolution', '${_webViewStats.rtcEncodeWidth}x${_webViewStats.rtcEncodeHeight}'),
+              _buildStatRow('Enc FPS', '${_webViewStats.rtcEncodeFps}'),
+              _buildStatRow('Retransmits', '${_webViewStats.rtcRetransmits}',
+                  valueColor: _webViewStats.rtcRetransmits > 0 ? Colors.orangeAccent : Colors.greenAccent),
               const SizedBox(height: 6),
             ],
 
@@ -286,6 +309,16 @@ class _StatsOverlayState extends State<StatsOverlay> {
       default:
         return source;
     }
+  }
+
+  /// Truncate long encoder names for display (e.g., SimulcastEncoderAdapter)
+  String _truncateEncoder(String encoder) {
+    // Extract key part of encoder name
+    if (encoder.contains('exynos.h264')) return 'HW H264 (Exynos)';
+    if (encoder.contains('c2.android.h264')) return 'SW H264';
+    if (encoder.contains('SimulcastEncoderAdapter')) return 'Simulcast HW';
+    if (encoder.length > 20) return '${encoder.substring(0, 17)}...';
+    return encoder;
   }
 
   Widget _buildSectionHeader(String title) {

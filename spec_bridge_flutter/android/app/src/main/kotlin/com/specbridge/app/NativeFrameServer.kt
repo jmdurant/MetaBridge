@@ -29,6 +29,7 @@ class NativeFrameServer(port: Int = DEFAULT_PORT) : WebSocketServer(InetSocketAd
 
     private var framesSent = 0L
     private var framesDropped = 0L
+    private var framesWithBackpressure = 0L  // Frames sent when buffer already had pending data
 
     val hasClient: Boolean
         get() = connectedClient != null && connectedClient!!.isOpen
@@ -88,6 +89,11 @@ class NativeFrameServer(port: Int = DEFAULT_PORT) : WebSocketServer(InetSocketAd
         }
 
         return try {
+            // Check if buffer has pending data (backpressure indicator)
+            if (client.hasBufferedData()) {
+                framesWithBackpressure++
+            }
+
             client.send(frameData)
             framesSent++
 
@@ -95,7 +101,7 @@ class NativeFrameServer(port: Int = DEFAULT_PORT) : WebSocketServer(InetSocketAd
                 android.util.Log.d(TAG, "Sent first frame (${frameData.size} bytes)")
             }
             if (framesSent % 100 == 0L) {
-                android.util.Log.d(TAG, "Sent $framesSent frames, dropped $framesDropped")
+                android.util.Log.d(TAG, "Sent $framesSent frames, dropped $framesDropped, backpressure $framesWithBackpressure")
             }
 
             true
@@ -142,7 +148,8 @@ class NativeFrameServer(port: Int = DEFAULT_PORT) : WebSocketServer(InetSocketAd
             "hasClient" to hasClient,
             "port" to port,
             "framesSent" to framesSent,
-            "framesDropped" to framesDropped
+            "framesDropped" to framesDropped,
+            "framesWithBackpressure" to framesWithBackpressure
         )
     }
 
@@ -160,6 +167,7 @@ class NativeFrameServer(port: Int = DEFAULT_PORT) : WebSocketServer(InetSocketAd
         connectedClient = null
         framesSent = 0L
         framesDropped = 0L
+        framesWithBackpressure = 0L
         android.util.Log.d(TAG, "Client state reset complete")
     }
 }
