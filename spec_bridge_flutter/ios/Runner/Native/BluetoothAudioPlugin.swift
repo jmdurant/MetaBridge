@@ -48,6 +48,17 @@ class BluetoothAudioPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
             clearAudioDevice(result: result)
         case "isBluetoothAudioActive":
             isBluetoothAudioActive(result: result)
+        case "forcePhoneMic":
+            forcePhoneMic(result: result)
+        case "setPhoneAudioMode":
+            if let args = call.arguments as? [String: Any],
+               let mode = args["mode"] as? String {
+                setPhoneAudioMode(mode: mode, result: result)
+            } else {
+                result(FlutterError(code: "INVALID_ARGUMENT", message: "mode is required", details: nil))
+            }
+        case "routeToGlassesBle":
+            routeToGlassesBle(result: result)
         default:
             result(FlutterMethodNotImplemented)
         }
@@ -133,6 +144,102 @@ class BluetoothAudioPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         }
 
         result(hasBluetoothInput || hasBluetoothOutput)
+    }
+
+    /// Force audio to phone's built-in speaker/mic.
+    /// This prevents Bluetooth from competing with glasses video stream.
+    private func forcePhoneMic(result: @escaping FlutterResult) {
+        do {
+            // Override to speaker forces audio to built-in speaker
+            try audioSession.setCategory(.playAndRecord, options: [.defaultToSpeaker])
+            try audioSession.overrideOutputAudioPort(.speaker)
+            try audioSession.setActive(true)
+            print("BluetoothAudioPlugin: Forced audio to phone speaker")
+            result(true)
+        } catch {
+            print("BluetoothAudioPlugin: Failed to force phone mic - \(error)")
+            result(FlutterError(code: "FORCE_PHONE_MIC_ERROR", message: error.localizedDescription, details: nil))
+        }
+    }
+
+    /// Set phone audio mode to speakerphone or earpiece.
+    private func setPhoneAudioMode(mode: String, result: @escaping FlutterResult) {
+        do {
+            switch mode {
+            case "speakerphone":
+                try audioSession.setCategory(.playAndRecord, options: [.defaultToSpeaker])
+                try audioSession.overrideOutputAudioPort(.speaker)
+                print("BluetoothAudioPlugin: Set audio to speakerphone")
+            case "earpiece":
+                try audioSession.setCategory(.playAndRecord, options: [])
+                try audioSession.overrideOutputAudioPort(.none)
+                print("BluetoothAudioPlugin: Set audio to earpiece")
+            default:
+                result(FlutterError(code: "INVALID_MODE", message: "Mode must be 'speakerphone' or 'earpiece'", details: nil))
+                return
+            }
+            try audioSession.setActive(true)
+            result(true)
+        } catch {
+            print("BluetoothAudioPlugin: Failed to set phone audio mode - \(error)")
+            result(FlutterError(code: "SET_PHONE_AUDIO_ERROR", message: error.localizedDescription, details: nil))
+        }
+    }
+
+    /// Route audio to glasses, preferring BLE Audio over HFP.
+    /// BLE Audio uses Bluetooth LE which doesn't compete with Classic used by glasses video.
+    private func routeToGlassesBle(result: @escaping FlutterResult) {
+        do {
+            try audioSession.setCategory(.playAndRecord, options: [.allowBluetooth, .allowBluetoothA2DP])
+            try audioSession.setMode(.voiceChat)
+            try audioSession.setActive(true)
+
+            guard let availableInputs = audioSession.availableInputs else {
+                result([
+                    "success": false,
+                    "type": "none",
+                    "deviceName": NSNull()
+                ])
+                return
+            }
+
+            print("BluetoothAudioPlugin: Looking for glasses BLE audio...")
+            print("BluetoothAudioPlugin: Available inputs: \(availableInputs.map { "\($0.portName) (\($0.portType.rawValue))" })")
+
+            // Prefer BLE over HFP
+            let bleDevice = availableInputs.first { $0.portType == .bluetoothLE }
+            let hfpDevice = availableInputs.first { $0.portType == .bluetoothHFP }
+
+            let targetDevice = bleDevice ?? hfpDevice
+            let deviceType: String
+            if bleDevice != nil {
+                deviceType = "ble"
+            } else if hfpDevice != nil {
+                deviceType = "sco" // HFP is similar to SCO
+            } else {
+                deviceType = "none"
+            }
+
+            if let device = targetDevice {
+                try audioSession.setPreferredInput(device)
+                print("BluetoothAudioPlugin: Routed to \(deviceType) device: \(device.portName)")
+                result([
+                    "success": true,
+                    "type": deviceType,
+                    "deviceName": device.portName
+                ])
+            } else {
+                print("BluetoothAudioPlugin: No BLE or HFP device found")
+                result([
+                    "success": false,
+                    "type": "none",
+                    "deviceName": NSNull()
+                ])
+            }
+        } catch {
+            print("BluetoothAudioPlugin: Failed to route to glasses BLE - \(error)")
+            result(FlutterError(code: "ROUTE_GLASSES_BLE_ERROR", message: error.localizedDescription, details: nil))
+        }
     }
 
     private func isBluetoothPort(_ portType: AVAudioSession.Port) -> Bool {
