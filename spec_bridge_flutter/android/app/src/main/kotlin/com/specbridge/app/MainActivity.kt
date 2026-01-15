@@ -73,6 +73,31 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     private fun handleIntent(intent: Intent?) {
+        // Handle JOIN_MEETING action (for adb testing)
+        if (intent?.action == "com.specbridge.app.JOIN_MEETING") {
+            val meetingUrl = intent.getStringExtra("meeting_url")
+            val meetingId = intent.getStringExtra("meeting_id")
+            val displayName = intent.getStringExtra("display_name")
+
+            android.util.Log.d("MainActivity", "JOIN_MEETING: url=$meetingUrl, id=$meetingId, name=$displayName")
+
+            // Build a specbridge:// URL from the extras
+            val urlBuilder = StringBuilder("specbridge://join?")
+            meetingId?.let { urlBuilder.append("room=$it") }
+            meetingUrl?.let {
+                // Extract server from meeting_url (e.g., https://meet.ffmuc.net/Room -> https://meet.ffmuc.net)
+                val serverUrl = it.substringBeforeLast("/")
+                if (serverUrl.isNotEmpty() && serverUrl != it) {
+                    urlBuilder.append("&server=$serverUrl")
+                }
+            }
+            displayName?.let { urlBuilder.append("&name=$it") }
+
+            metaWearablesPlugin.handleIncomingUrl(urlBuilder.toString())
+            return
+        }
+
+        // Handle specbridge:// deep links
         intent?.data?.let { uri ->
             if (uri.scheme == "specbridge") {
                 metaWearablesPlugin.handleIncomingUrl(uri.toString())

@@ -74,6 +74,12 @@
                 <data android:scheme="specbridge" />
             </intent-filter>
 
+            <!-- ADB intent for testing: adb shell am start -a com.specbridge.app.JOIN_MEETING -->
+            <intent-filter>
+                <action android:name="com.specbridge.app.JOIN_MEETING" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+
             <!-- Meta AI app callback -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
