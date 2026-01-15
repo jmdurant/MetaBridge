@@ -66,7 +66,7 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- Deep link: specbridge:// scheme -->
+            <!-- Deep link: specbridge:// scheme (legacy) -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -74,10 +74,12 @@
                 <data android:scheme="specbridge" />
             </intent-filter>
 
-            <!-- ADB intent for testing: adb shell am start -a com.specbridge.app.JOIN_MEETING -->
+            <!-- Deep link: openemr-telehealth://join (standard cross-platform format) -->
             <intent-filter>
-                <action android:name="com.specbridge.app.JOIN_MEETING" />
+                <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="openemr-telehealth" android:host="join" />
             </intent-filter>
 
             <!-- Meta AI app callback -->

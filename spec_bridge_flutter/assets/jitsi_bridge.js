@@ -814,12 +814,16 @@ function initJitsi() {
 // Join a room
 // usePhoneMic: when true, forces phone's built-in mic instead of Bluetooth
 //              to avoid competing with glasses video stream for BT bandwidth
-async function joinRoom(server, room, displayName, enableE2EE = false, e2eePassphrase = '', usePhoneMic = true) {
+// jwt: optional JWT token for authenticated Jitsi servers
+async function joinRoom(server, room, displayName, enableE2EE = false, e2eePassphrase = '', usePhoneMic = true, jwt = null) {
   updateStatus('Connecting to ' + server + '...');
 
   // Store E2EE config for use after joining
   e2eeConfig = { enabled: enableE2EE, passphrase: e2eePassphrase };
   console.log('[JitsiBridge] E2EE config:', enableE2EE ? 'enabled' : 'disabled');
+  if (jwt) {
+    console.log('[JitsiBridge] JWT token provided for authentication');
+  }
 
   try {
     // Parse server URL
@@ -837,8 +841,8 @@ async function joinRoom(server, room, displayName, enableE2EE = false, e2eePassp
       clientNode: 'https://jitsi.org/jitsimeet'
     };
 
-    // Create connection
-    connection = new JitsiMeetJS.JitsiConnection(null, null, options);
+    // Create connection with optional JWT for authenticated servers
+    connection = new JitsiMeetJS.JitsiConnection(null, jwt, options);
 
     // Connection event listeners
     connection.addEventListener(

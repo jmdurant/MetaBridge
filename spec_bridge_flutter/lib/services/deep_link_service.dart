@@ -19,17 +19,20 @@ class MeetingJoinEvent extends DeepLinkEvent {
   final String roomName;
   final String serverUrl;
   final String? displayName;
+  final String? jwt;
 
   MeetingJoinEvent({
     required this.roomName,
     required this.serverUrl,
     this.displayName,
+    this.jwt,
   });
 
   MeetingConfig toConfig() => MeetingConfig.fromDeepLink(
         roomName: roomName,
         serverUrl: serverUrl,
         displayName: displayName,
+        jwt: jwt,
       );
 }
 
@@ -85,17 +88,38 @@ class DeepLinkService extends ChangeNotifier {
         event = MetaViewCallbackEvent(link);
       }
       // Check if meeting join link
-      // specbridge://join?room=X&server=Y&name=Z
+      // specbridge://join?room=X&server=Y&name=Z&jwt=W
       else if (uri.host == 'join' || uri.path == '/join') {
         final room = uri.queryParameters['room'];
         final server = uri.queryParameters['server'] ?? 'https://meet.jit.si';
         final name = uri.queryParameters['name'];
+        final jwt = uri.queryParameters['jwt'];
 
         if (room != null && room.isNotEmpty) {
           event = MeetingJoinEvent(
             roomName: room,
             serverUrl: server,
             displayName: name,
+            jwt: jwt,
+          );
+        }
+      }
+    }
+    // Standard cross-platform format: openemr-telehealth://join?room=X&server=Y&name=Z&jwt=W
+    // Works on Quest, Meta Glasses (Android), Meta Glasses (iOS)
+    else if (uri.scheme == 'openemr-telehealth') {
+      if (uri.host == 'join' || uri.path == '/join') {
+        final room = uri.queryParameters['room'];
+        final server = uri.queryParameters['server'] ?? 'https://meet.jit.si';
+        final name = uri.queryParameters['name'];
+        final jwt = uri.queryParameters['jwt'];
+
+        if (room != null && room.isNotEmpty) {
+          event = MeetingJoinEvent(
+            roomName: room,
+            serverUrl: server,
+            displayName: name,
+            jwt: jwt,
           );
         }
       }
@@ -139,13 +163,16 @@ class DeepLinkService extends ChangeNotifier {
     if (uri == null) return null;
 
     // Parse meeting info from initial link
-    if (uri.scheme == 'specbridge' && (uri.host == 'join' || uri.path == '/join')) {
+    // Supports both specbridge:// and openemr-telehealth:// schemes
+    if ((uri.scheme == 'specbridge' || uri.scheme == 'openemr-telehealth') &&
+        (uri.host == 'join' || uri.path == '/join')) {
       final room = uri.queryParameters['room'];
       if (room != null && room.isNotEmpty) {
         return MeetingConfig.fromDeepLink(
           roomName: room,
           serverUrl: uri.queryParameters['server'],
           displayName: uri.queryParameters['name'],
+          jwt: uri.queryParameters['jwt'],
         );
       }
     }

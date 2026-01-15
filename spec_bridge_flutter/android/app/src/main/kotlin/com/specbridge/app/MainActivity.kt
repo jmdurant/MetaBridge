@@ -97,9 +97,10 @@ class MainActivity : FlutterFragmentActivity() {
             return
         }
 
-        // Handle specbridge:// deep links
+        // Handle deep links: specbridge:// and openemr-telehealth://
         intent?.data?.let { uri ->
-            if (uri.scheme == "specbridge") {
+            if (uri.scheme == "specbridge" || uri.scheme == "openemr-telehealth") {
+                android.util.Log.d("MainActivity", "Deep link: ${uri}")
                 metaWearablesPlugin.handleIncomingUrl(uri.toString())
             }
         }

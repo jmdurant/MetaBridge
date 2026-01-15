@@ -22,14 +22,15 @@ import UIKit
         return super.application(application, didFinishLaunchingWithOptions: launchOptions)
     }
 
-    // Handle URL callbacks from Meta View app
+    // Handle URL callbacks from Meta View app and deep links
     override func application(
         _ app: UIApplication,
         open url: URL,
         options: [UIApplication.OpenURLOptionsKey: Any] = [:]
     ) -> Bool {
-        // Check if this is a Meta View callback
-        if url.scheme == "specbridge" {
+        // Handle specbridge:// and openemr-telehealth:// schemes
+        if url.scheme == "specbridge" || url.scheme == "openemr-telehealth" {
+            print("AppDelegate: Deep link received: \(url)")
             metaDATPlugin?.handleIncomingURL(url)
             return true
         }

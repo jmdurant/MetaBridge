@@ -430,11 +430,14 @@ class LibJitsiService extends ChangeNotifier {
     final displayName = config.displayName;
     final enableE2EE = config.enableE2EE;
     final e2eePassphrase = config.e2eePassphrase ?? '';
+    final jwt = config.jwt;
 
-    debugPrint('LibJitsiService: Joining $room on $server as $displayName (E2EE: $enableE2EE, usePhoneMic: $usePhoneMic)');
+    debugPrint('LibJitsiService: Joining $room on $server as $displayName (E2EE: $enableE2EE, usePhoneMic: $usePhoneMic, hasJWT: ${jwt != null})');
 
+    // Pass null for JWT if not provided (JavaScript will handle null)
+    final jwtParam = jwt != null ? '"$jwt"' : 'null';
     await _controller?.evaluateJavascript(
-      source: 'joinRoom("$server", "$room", "$displayName", $enableE2EE, "$e2eePassphrase", $usePhoneMic)',
+      source: 'joinRoom("$server", "$room", "$displayName", $enableE2EE, "$e2eePassphrase", $usePhoneMic, $jwtParam)',
     );
   }
 

@@ -57,6 +57,14 @@
 				<string>specbridge</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.openemr.telehealth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>openemr-telehealth</string>
+			</array>
+		</dict>
 	</array>
 
 	<!-- Meta Wearables DAT SDK Configuration -->
