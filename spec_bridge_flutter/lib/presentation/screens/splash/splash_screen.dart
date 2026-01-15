@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../../../data/models/meeting_config.dart';
 import '../../../services/deep_link_service.dart';
 import '../../../services/glasses_service.dart';
+import '../../../services/permission_service.dart';
 import '../../../services/settings_service.dart';
 
 /// Launch configuration from dart-defines
@@ -36,7 +37,11 @@ class _SplashScreenState extends State<SplashScreen> {
   }
 
   Future<void> _initialize() async {
-    // Initialize glasses service
+    // Request Android permissions first (Bluetooth required for Meta SDK)
+    final permissionService = context.read<PermissionService>();
+    await permissionService.requestAllPermissions();
+
+    // Initialize glasses service (Meta SDK needs Bluetooth access)
     final glassesService = context.read<GlassesService>();
     final deepLinkService = context.read<DeepLinkService>();
 

@@ -7,6 +7,7 @@ import '../../../data/models/app_settings.dart';
 import '../../../data/models/glasses_state.dart';
 import '../../../data/models/meeting_config.dart';
 import '../../../services/glasses_service.dart';
+import '../../../services/permission_service.dart';
 import '../../../services/settings_service.dart';
 
 /// Setup screen for glasses connection and meeting configuration
@@ -97,6 +98,21 @@ class _SetupScreenState extends State<SetupScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please enter an E2EE passphrase')),
       );
+      return;
+    }
+
+    // Request Android permissions (Bluetooth, Camera, Mic) if not granted
+    final permissionService = context.read<PermissionService>();
+    final androidPermissionsGranted = await permissionService.requestAllPermissions();
+    if (!androidPermissionsGranted) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Please grant all permissions to continue'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
       return;
     }
 
