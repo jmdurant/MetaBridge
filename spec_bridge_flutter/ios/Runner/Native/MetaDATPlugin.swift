@@ -111,6 +111,10 @@ class MetaDATPlugin: NSObject {
             // No-op on iOS - we use Unix socket instead of WebSocket server
             result(true)
 
+        case "isNativeServerEnabled":
+            // Always false on iOS - we use Unix socket, not WebSocket server
+            result(false)
+
         case "resetFrameServer":
             resetFrameServer(result: result)
 
