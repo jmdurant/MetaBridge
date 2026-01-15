@@ -188,7 +188,7 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
                 ),
                 RadioListTile<AudioOutput>(
                   title: const Text('Glasses'),
-                  subtitle: const Text('Reduces video to 2fps'),
+                  subtitle: const Text('Prefers BLE (15fps) over SCO (7fps)'),
                   value: AudioOutput.glasses,
                 ),
               ],

@@ -23,6 +23,11 @@ abstract class BluetoothAudioChannel {
   /// @param mode Either "speakerphone" for loud hands-free or "earpiece" for quiet hold-to-ear
   Future<bool> setPhoneAudioMode(String mode);
 
+  /// Route audio to glasses, preferring BLE over SCO.
+  /// BLE Audio doesn't compete with Bluetooth Classic used by glasses video.
+  /// Returns {success: bool, type: "ble"|"sco"|"none", deviceName: String?}
+  Future<Map<String, dynamic>> routeToGlassesBle();
+
   /// Stream of Bluetooth audio device connection changes
   Stream<BluetoothAudioEvent> get audioDeviceChanges;
 }
@@ -152,6 +157,17 @@ class BluetoothAudioChannelImpl implements BluetoothAudioChannel {
       {'mode': mode},
     );
     return result ?? false;
+  }
+
+  @override
+  Future<Map<String, dynamic>> routeToGlassesBle() async {
+    final result = await _methodChannel.invokeMethod<Map<dynamic, dynamic>>(
+      'routeToGlassesBle',
+    );
+    if (result == null) {
+      return {'success': false, 'type': 'none', 'deviceName': null};
+    }
+    return Map<String, dynamic>.from(result);
   }
 
   @override

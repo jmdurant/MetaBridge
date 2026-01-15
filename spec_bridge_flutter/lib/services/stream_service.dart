@@ -350,12 +350,24 @@ class StreamService extends ChangeNotifier {
     if (!isGlassesMode) return; // Only applies to glasses streaming
 
     if (output == AudioOutput.glasses) {
-      // Glasses audio uses BT bandwidth → reduce video to 2fps, low quality
-      debugPrint('StreamService: Reducing video to 2fps/low for glasses audio');
-      await _glassesService.restartStreaming(
-        videoQuality: 'low',
-        frameRate: 2,
-      );
+      // Check if using BLE Audio (doesn't compete with Classic) or SCO (competes)
+      final audioType = _bluetoothAudioService.glassesAudioType;
+
+      if (audioType == 'ble') {
+        // BLE Audio uses different radio than Classic video - can use higher quality
+        debugPrint('StreamService: BLE audio detected - using 15fps/medium (BLE separate from Classic)');
+        await _glassesService.restartStreaming(
+          videoQuality: 'medium',
+          frameRate: 15,
+        );
+      } else {
+        // SCO uses Classic bandwidth → reduce video to 7fps, low quality
+        debugPrint('StreamService: SCO audio detected - reducing to 7fps/low (shares Classic bandwidth)');
+        await _glassesService.restartStreaming(
+          videoQuality: 'low',
+          frameRate: 7,
+        );
+      }
     } else {
       // Speakerphone or earpiece → maximize video to 24fps, high quality (BT free for video)
       debugPrint('StreamService: Maximizing video to 24fps/high for ${output.name}');

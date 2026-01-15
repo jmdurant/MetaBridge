@@ -59,7 +59,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case AudioOutput.earpiece:
         return 'Earpiece (max video quality)';
       case AudioOutput.glasses:
-        return 'Glasses (reduces video to 2fps)';
+        return 'Glasses (BLE 15fps / SCO 7fps)';
     }
   }
 
@@ -126,7 +126,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 RadioListTile<AudioOutput>(
                   title: const Text('Glasses'),
-                  subtitle: const Text('Reduces video to 2fps (Bluetooth bandwidth)'),
+                  subtitle: const Text('Prefers BLE (15fps) over SCO (7fps)'),
                   value: AudioOutput.glasses,
                 ),
               ],

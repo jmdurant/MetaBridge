@@ -99,10 +99,14 @@ class BluetoothAudioService extends ChangeNotifier {
     }
   }
 
+  // Track what type of Bluetooth connection is used for glasses audio
+  String? _glassesAudioType; // "ble", "sco", or null
+  String? get glassesAudioType => _glassesAudioType;
+
   /// Set audio output based on AudioOutput enum.
   /// - speakerphone: Loud hands-free mode via built-in speaker
   /// - earpiece: Quiet hold-to-ear mode via built-in earpiece
-  /// - glasses: Route to Meta glasses via Bluetooth (reduces video to 2fps)
+  /// - glasses: Route to Meta glasses via Bluetooth (prefers BLE over SCO)
   Future<bool> setAudioOutput(AudioOutput output) async {
     try {
       switch (output) {
@@ -110,6 +114,7 @@ class BluetoothAudioService extends ChangeNotifier {
           final success = await _channel.setPhoneAudioMode('speakerphone');
           if (success) {
             _activeDevice = null;
+            _glassesAudioType = null;
             notifyListeners();
           }
           debugPrint('Set audio to speakerphone: $success');
@@ -119,13 +124,27 @@ class BluetoothAudioService extends ChangeNotifier {
           final success = await _channel.setPhoneAudioMode('earpiece');
           if (success) {
             _activeDevice = null;
+            _glassesAudioType = null;
             notifyListeners();
           }
           debugPrint('Set audio to earpiece: $success');
           return success;
 
         case AudioOutput.glasses:
-          return await autoRouteToGlasses();
+          // Prefer BLE Audio over SCO - BLE doesn't compete with Classic video
+          final result = await _channel.routeToGlassesBle();
+          final success = result['success'] as bool? ?? false;
+          final type = result['type'] as String?;
+          final deviceName = result['deviceName'] as String?;
+
+          if (success) {
+            _glassesAudioType = type;
+            debugPrint('Set audio to glasses via $type ($deviceName)');
+            notifyListeners();
+          } else {
+            debugPrint('Failed to route audio to glasses');
+          }
+          return success;
       }
     } catch (e) {
       debugPrint('Failed to set audio output: $e');

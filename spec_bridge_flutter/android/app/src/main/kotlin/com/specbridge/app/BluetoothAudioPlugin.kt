@@ -60,6 +60,7 @@ class BluetoothAudioPlugin(
             "clearAudioDevice" -> clearAudioDevice(result)
             "isBluetoothAudioActive" -> isBluetoothAudioActive(result)
             "forcePhoneMic" -> forcePhoneMic(result)
+            "routeToGlassesBle" -> routeToGlassesBle(result)
             "setPhoneAudioMode" -> {
                 val mode = call.argument<String>("mode")
                 if (mode != null) {
@@ -287,6 +288,64 @@ class BluetoothAudioPlugin(
         } catch (e: Exception) {
             Log.e(TAG, "Failed to force phone mic", e)
             result.error("FORCE_PHONE_MIC_ERROR", e.message, null)
+        }
+    }
+
+    /**
+     * Route audio to glasses, preferring BLE Audio over SCO.
+     * BLE Audio uses Bluetooth Low Energy which doesn't compete with
+     * Bluetooth Classic bandwidth used by glasses video stream.
+     * Returns map with "success" and "type" (ble, sco, or none).
+     */
+    private fun routeToGlassesBle(result: MethodChannel.Result) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val availableDevices = audioManager.availableCommunicationDevices
+                Log.d(TAG, "Looking for glasses BLE audio device...")
+                Log.d(TAG, "Available devices: ${availableDevices.map { "${it.productName} (type=${it.type})" }}")
+
+                // Prefer BLE headset (TYPE_BLE_HEADSET = 26) over SCO
+                val bleDevice = availableDevices.find { it.type == AudioDeviceInfo.TYPE_BLE_HEADSET }
+                val scoDevice = availableDevices.find { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }
+
+                val targetDevice = bleDevice ?: scoDevice
+                val deviceType = when {
+                    bleDevice != null -> "ble"
+                    scoDevice != null -> "sco"
+                    else -> "none"
+                }
+
+                if (targetDevice != null) {
+                    val success = audioManager.setCommunicationDevice(targetDevice)
+                    Log.d(TAG, "routeToGlassesBle: using $deviceType device ${targetDevice.productName}, success=$success")
+                    result.success(mapOf(
+                        "success" to success,
+                        "type" to deviceType,
+                        "deviceName" to (targetDevice.productName?.toString() ?: "Unknown")
+                    ))
+                } else {
+                    Log.w(TAG, "routeToGlassesBle: no BLE or SCO device found")
+                    result.success(mapOf(
+                        "success" to false,
+                        "type" to "none",
+                        "deviceName" to null
+                    ))
+                }
+            } else {
+                // Android 11 and below - only SCO available
+                @Suppress("DEPRECATION")
+                audioManager.startBluetoothSco()
+                audioManager.isBluetoothScoOn = true
+                Log.d(TAG, "routeToGlassesBle: using legacy SCO (Android ${Build.VERSION.SDK_INT})")
+                result.success(mapOf(
+                    "success" to true,
+                    "type" to "sco",
+                    "deviceName" to "Bluetooth SCO"
+                ))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to route to glasses BLE", e)
+            result.error("ROUTE_GLASSES_BLE_ERROR", e.message, null)
         }
     }
 
