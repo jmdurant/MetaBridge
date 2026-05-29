@@ -1012,13 +1012,16 @@ let recordingActive = false;
 let recChunkCount = 0;
 
 function pickRecordingMime() {
+  // Prefer WebM: MediaRecorder's WebM is built for streamed/chunked recording and
+  // handles uneven track ends far better than fragmented MP4 (which lacks a finalized
+  // duration when written in timeslices -> audio runs past video on playback).
   const candidates = [
-    'video/mp4;codecs=h264,aac',
-    'video/mp4',
     'video/webm;codecs=h264,opus',
     'video/webm;codecs=vp9,opus',
     'video/webm;codecs=vp8,opus',
     'video/webm',
+    'video/mp4;codecs=h264,aac',
+    'video/mp4',
   ];
   for (const m of candidates) {
     if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m;
@@ -1051,7 +1054,12 @@ function startRecording(includeAudio) {
       if (e.data && e.data.size > 0) {
         const reader = new FileReader();
         reader.onloadend = () => {
-          const b64 = String(reader.result).split(',')[1] || '';
+          // Extract base64 after the ';base64,' marker. The header can contain commas
+          // (codecs="avc1...,mp4a..."), so splitting on ',' grabs the wrong piece.
+          const result = String(reader.result);
+          const marker = ';base64,';
+          const idx = result.indexOf(marker);
+          const b64 = idx >= 0 ? result.substring(idx + marker.length) : '';
           if (b64 && window.flutter_inappwebview) {
             window.flutter_inappwebview.callHandler('recordingChunk', b64);
           }
@@ -1271,15 +1279,27 @@ async function onConnectionEstablished(room, displayName) {
     // so WebRTC will use the phone's built-in mic instead of Bluetooth.
     // This preserves Bluetooth bandwidth for glasses video streaming.
     try {
-      console.log('[JitsiBridge] Creating audio track (usePhoneMic=' + usePhoneMic + ')');
+      // NOTE: usePhoneMic is NOT in scope here (it's a joinRoom param; this is a
+      // separate top-level function). Referencing it previously threw a ReferenceError
+      // that the catch swallowed as "audio track creation failed" — silently disabling
+      // the mic for the whole meeting. Do not reference usePhoneMic here.
+      console.log('[JitsiBridge] Creating audio track');
+      notifyFlutter('audioTrackResult', { stage: 'creating' });
       const audioTracks = await JitsiMeetJS.createLocalTracks({
         devices: ['audio'],
       });
       localAudioTrack = audioTracks[0];
       updateStatus('Audio track created');
       console.log('[JitsiBridge] Audio track created successfully');
+      notifyFlutter('audioTrackResult', { stage: 'created', ok: true });
     } catch (audioError) {
-      console.warn('[JitsiBridge] Audio track creation failed:', audioError);
+      // Surface the real reason to Dart logs (chromium console is buried by the
+      // Meta AI app's log spam). Common: NotReadableError = mic held by native BT audio.
+      const msg = (audioError && audioError.name)
+          ? (audioError.name + ': ' + (audioError.message || ''))
+          : String(audioError);
+      console.warn('[JitsiBridge] Audio track creation failed:', msg);
+      notifyFlutter('audioTrackResult', { stage: 'failed', error: msg });
       // Continue without audio if it fails
     }
 
