@@ -106,8 +106,10 @@ class MetaWearablesPlugin(
                     }
                 }
 
+                android.util.Log.d("MetaWearablesPlugin", "configure() result=$success")
                 result.success(success)
             } catch (e: Exception) {
+                android.util.Log.e("MetaWearablesPlugin", "configure() threw", e)
                 result.error("CONFIG_FAILED", e.message, null)
             }
         }

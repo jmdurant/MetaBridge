@@ -64,7 +64,13 @@ class MetaWearablesManager(private val activity: Activity) {
     // AutoDeviceSelector automatically selects the first available wearable device.
     // NOTE: deliberately NOT filtering on isDisplayCapable() — that would exclude every
     // camera-only glasses (Gen 1, Gen 2, Optics). We only need camera streaming here.
-    val deviceSelector: DeviceSelector = AutoDeviceSelector()
+    //
+    // MUST be lazy: in SDK 0.7.0 the AutoDeviceSelector constructor eagerly touches the
+    // Wearables singleton, which throws "Wearables not initialized" if created before
+    // configure() calls Wearables.initialize(). Lazy defers creation to first use (inside
+    // configure(), after initialize()), so the required ordering holds. (0.3.0 tolerated
+    // eager construction; 0.7.0 does not.)
+    val deviceSelector: DeviceSelector by lazy { AutoDeviceSelector() }
 
     // Per-device compatibility monitoring jobs and latest known compatibility.
     private val deviceMonitoringJobs = mutableMapOf<DeviceIdentifier, Job>()
@@ -74,13 +80,16 @@ class MetaWearablesManager(private val activity: Activity) {
 
     fun configure(): Boolean {
         return try {
+            android.util.Log.d("MetaWearablesManager", "configure() entered; calling Wearables.initialize")
             // Initialize the SDK - must be called before any other Wearables APIs
             Wearables.initialize(context)
+            android.util.Log.d("MetaWearablesManager", "Wearables.initialize OK")
             isConfigured = true
 
             // Observe registration state (now a plain enum in 0.6.0+)
             scope.launch {
                 Wearables.registrationState.collect { state ->
+                    android.util.Log.d("MetaWearablesManager", "registrationState = $state")
                     _connectionState.value = when (state) {
                         RegistrationState.REGISTERED -> ConnectionState.CONNECTED
                         RegistrationState.REGISTERING -> ConnectionState.CONNECTING
@@ -88,6 +97,16 @@ class MetaWearablesManager(private val activity: Activity) {
                         RegistrationState.AVAILABLE -> ConnectionState.DISCONNECTED
                         RegistrationState.UNAVAILABLE -> ConnectionState.DISCONNECTED
                     }
+                }
+            }
+
+            // Observe registration errors. In 0.7.0 the error payload was moved OUT of
+            // RegistrationState (now a plain enum) into this dedicated stream — without
+            // observing it, a failed registration just silently hangs on "connecting".
+            scope.launch {
+                Wearables.registrationErrorStream.collect { error ->
+                    android.util.Log.e("MetaWearablesManager", "registrationError = $error")
+                    _connectionState.value = ConnectionState.ERROR
                 }
             }
 
@@ -173,10 +192,14 @@ class MetaWearablesManager(private val activity: Activity) {
 
         return try {
             _connectionState.value = ConnectionState.CONNECTING
-            // 0.4.0+: startRegistration takes an Activity (not a Context)
+            // 0.4.0+: startRegistration takes an Activity (not a Context).
+            // Note: 0.4.0+ shows the registration dialog in-place rather than jumping to Meta AI.
+            android.util.Log.d("MetaWearablesManager", "Calling Wearables.startRegistration(activity)")
             Wearables.startRegistration(activity)
+            android.util.Log.d("MetaWearablesManager", "Wearables.startRegistration returned (awaiting registrationState/registrationError)")
             true
         } catch (e: Exception) {
+            android.util.Log.e("MetaWearablesManager", "startRegistration threw", e)
             _connectionState.value = ConnectionState.ERROR
             false
         }
