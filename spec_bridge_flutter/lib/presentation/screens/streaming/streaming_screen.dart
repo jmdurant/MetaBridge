@@ -37,6 +37,7 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
   String? _errorMessage;
   Orientation? _lastOrientation;
   bool _backgroundMode = false;
+  StreamService? _streamService; // captured for a safe stop in dispose()
 
   @override
   void initState() {
@@ -57,6 +58,7 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
     final settings = context.read<SettingsService>().settings;
     streamService.setLibJitsiService(libJitsiService);
     streamService.setNativeChannel(nativeChannel);
+    _streamService = streamService; // keep a ref so dispose() can stop safely
 
     // Start the native frame server BEFORE mounting the WebView, so port 8766 is
     // already listening when the WebView connects — otherwise it loses the startup
@@ -146,6 +148,7 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
         frameRate: settings.defaultFrameRate.value,
         useNativeFrameServer: settings.useNativeFrameServer,
         compressVideo: settings.useCompressedVideo,
+        lowLatencyMode: settings.lowLatencyMode,
       );
       if (mounted) {
         setState(() => _isStarting = false);
@@ -251,6 +254,10 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _restoreSystemUI();
+    // Safety net: ensure the stream/session is torn down when leaving the screen by any
+    // path (not just End Call), so the glasses camera + meeting don't keep running and
+    // block the next stream. Harmless if already stopped.
+    _streamService?.stopStreaming();
     super.dispose();
   }
 

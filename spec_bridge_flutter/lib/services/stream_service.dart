@@ -138,6 +138,7 @@ class StreamService extends ChangeNotifier {
     int frameRate = 15, // Default to 15fps for stable Bluetooth
     bool useNativeFrameServer = true,
     bool compressVideo = false, // Experimental HEVC passthrough (SDK 0.6.0+)
+    bool lowLatencyMode = false, // Shallow jitter buffer (lower latency) vs deeper (smoother)
   }) async {
     try {
       if (_libJitsiService == null) {
@@ -214,6 +215,8 @@ class StreamService extends ChangeNotifier {
       // Tell the WebView whether to expect compressed HEVC frames (glasses mode only),
       // so its video track uses the WebCodecs + MediaStreamTrackGenerator path.
       await _libJitsiService!.setCompressedMode(isGlassesMode && compressVideo);
+      // Jitter-buffer trade-off (lower latency vs smoother)
+      await _libJitsiService!.setLowLatencyMode(lowLatencyMode);
 
       debugPrint('StreamService: [${ isGlassesMode ? "Glasses" : "Camera"}] Joining meeting (usePhoneMic=$usePhoneMic)...');
       await _libJitsiService!.joinMeeting(config, usePhoneMic: usePhoneMic);

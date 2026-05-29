@@ -48,6 +48,10 @@ class AppSettings extends Equatable {
   /// this off keeps the working raw-I420 pipeline. See Changelog 1.3.0.
   final bool useCompressedVideo;
 
+  /// HEVC jitter-buffer trade-off: ON = shallow buffer (lower latency),
+  /// OFF = deeper buffer (smoother under bursts). Only affects compressed glasses mode.
+  final bool lowLatencyMode;
+
   const AppSettings({
     this.jitsiMode = JitsiMode.libJitsiMeet,
     this.defaultServer = 'https://meet.ffmuc.net',
@@ -59,6 +63,7 @@ class AppSettings extends Equatable {
     this.defaultFrameRate = TargetFrameRate.fps15, // 15fps stable on Bluetooth
     this.useNativeFrameServer = true, // Default enabled for better performance
     this.useCompressedVideo = false, // Experimental HEVC passthrough, off by default
+    this.lowLatencyMode = false, // Default to smoother buffering
   });
 
   AppSettings copyWith({
@@ -72,6 +77,7 @@ class AppSettings extends Equatable {
     TargetFrameRate? defaultFrameRate,
     bool? useNativeFrameServer,
     bool? useCompressedVideo,
+    bool? lowLatencyMode,
   }) {
     return AppSettings(
       jitsiMode: jitsiMode ?? this.jitsiMode,
@@ -84,6 +90,7 @@ class AppSettings extends Equatable {
       defaultFrameRate: defaultFrameRate ?? this.defaultFrameRate,
       useNativeFrameServer: useNativeFrameServer ?? this.useNativeFrameServer,
       useCompressedVideo: useCompressedVideo ?? this.useCompressedVideo,
+      lowLatencyMode: lowLatencyMode ?? this.lowLatencyMode,
     );
   }
 
@@ -99,5 +106,6 @@ class AppSettings extends Equatable {
         defaultFrameRate,
         useNativeFrameServer,
         useCompressedVideo,
+        lowLatencyMode,
       ];
 }

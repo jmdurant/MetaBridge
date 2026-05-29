@@ -398,6 +398,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   settingsService.setUseCompressedVideo(value);
                 },
               ),
+              SwitchListTile(
+                title: const Text('Low Latency Mode'),
+                subtitle: const Text(
+                    'Shallow jitter buffer for lower latency. OFF = deeper buffer, '
+                    'smoother under motion/backpressure. (Compressed glasses mode.)'),
+                secondary: const Icon(Icons.bolt_outlined),
+                value: settings.lowLatencyMode,
+                onChanged: (value) {
+                  settingsService.setLowLatencyMode(value);
+                },
+              ),
               const SizedBox(height: 32),
               const Padding(
                 padding: EdgeInsets.all(16),

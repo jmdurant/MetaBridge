@@ -380,6 +380,18 @@ class LibJitsiService extends ChangeNotifier {
     }
   }
 
+  /// Set the HEVC jitter-buffer trade-off in the WebView: true = lower latency
+  /// (shallow buffer), false = smoother (deeper buffer).
+  Future<void> setLowLatencyMode(bool enabled) async {
+    if (_controller == null) return;
+    try {
+      await _controller?.evaluateJavascript(source: 'setLowLatencyMode($enabled)');
+      debugPrint('LibJitsiService: lowLatencyMode set to $enabled');
+    } catch (e) {
+      debugPrint('LibJitsiService: setLowLatencyMode error: $e');
+    }
+  }
+
   /// Wait for WebSocket to be connected (for glasses frame pipeline)
   /// Call this before joining a meeting in glasses mode to ensure frames can flow
   Future<bool> waitForWebSocketConnected({Duration timeout = const Duration(seconds: 10)}) async {

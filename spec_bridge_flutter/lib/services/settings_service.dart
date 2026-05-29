@@ -13,6 +13,7 @@ class SettingsService extends ChangeNotifier {
   static const _keyDefaultFrameRate = 'default_frame_rate';
   static const _keyUseNativeFrameServer = 'use_native_frame_server';
   static const _keyUseCompressedVideo = 'use_compressed_video';
+  static const _keyLowLatencyMode = 'low_latency_mode';
   static const _keyGlassesCameraPermissionGranted = 'glasses_camera_permission_granted';
 
   AppSettings _settings = const AppSettings();
@@ -65,6 +66,7 @@ class SettingsService extends ChangeNotifier {
       defaultFrameRate: frameRate,
       useNativeFrameServer: prefs.getBool(_keyUseNativeFrameServer) ?? true,
       useCompressedVideo: prefs.getBool(_keyUseCompressedVideo) ?? false,
+      lowLatencyMode: prefs.getBool(_keyLowLatencyMode) ?? false,
     );
 
     // Load glasses camera permission (persisted across sessions)
@@ -137,6 +139,13 @@ class SettingsService extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_keyUseCompressedVideo, use);
     _settings = _settings.copyWith(useCompressedVideo: use);
+    notifyListeners();
+  }
+
+  Future<void> setLowLatencyMode(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyLowLatencyMode, enabled);
+    _settings = _settings.copyWith(lowLatencyMode: enabled);
     notifyListeners();
   }
 

@@ -247,6 +247,17 @@ class MetaWearablesPlugin(
             return
         }
 
+        // Tear down any prior stream/session before starting a new one. Otherwise the old
+        // session keeps the glasses camera held and the new stream hangs at STARTING — the
+        // "frozen on the next stream" resume bug (e.g. when the screen was left without an
+        // explicit stop). The brief delay lets the SDK/glasses release the camera.
+        streamManager?.let {
+            android.util.Log.d("MetaWearablesPlugin", "Disposing previous stream session before restart")
+            it.dispose()
+        }
+        streamManager = null
+        kotlinx.coroutines.delay(300)
+
         // Initialize stream session manager for glasses
         streamManager = StreamSessionManager(activity, manager)
 

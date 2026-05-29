@@ -17,6 +17,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -78,6 +79,14 @@ class StreamSessionManager(
 
     // Whether this session requested compressed HEVC frames.
     private var compressVideo = false
+
+    // Requested params, stored so the start-watchdog can retry with a fresh session.
+    private var reqFrameRate = 24
+    private var reqQuality = "medium"
+    private var startAttempt = 0
+    private var watchdogJob: Job? = null
+    private val MAX_START_ATTEMPTS = 3
+    private val START_TIMEOUT_MS = 6000L
 
     // Direct callback for frames - bypasses SharedFlow for lower latency
     var onFrameReady: ((ByteArray) -> Unit)? = null
@@ -161,28 +170,31 @@ class StreamSessionManager(
         }
 
         this.compressVideo = compressVideo
+        this.reqFrameRate = frameRate
+        this.reqQuality = videoQualityStr
+        this.startAttempt = 0
         scope.launch {
-            startStreamingAsync(frameRate, videoQualityStr, compressVideo)
+            startStreamingAsync()
         }
         return true // actual status reported via statusFlow
     }
 
-    private fun startStreamingAsync(frameRate: Int, videoQualityStr: String, compress: Boolean) {
+    private fun startStreamingAsync() {
         _statusFlow.value = "starting"
         frameCount = 0
         framesProcessed = 0
         compressedFrameCount = 0
         streamAttached = false
 
-        val quality = when (videoQualityStr.lowercase()) {
+        val quality = when (reqQuality.lowercase()) {
             "low" -> VideoQuality.LOW
             "high" -> VideoQuality.HIGH
             else -> VideoQuality.MEDIUM
         }
         // Coerce to a frame rate the SDK accepts: 30, 24, 15, 7, 2
         val validFps = listOf(30, 24, 15, 7, 2)
-        val fps = validFps.minByOrNull { kotlin.math.abs(it - frameRate) } ?: 24
-        android.util.Log.d("StreamSessionManager", "Using quality=$quality @ ${fps}fps (requested $frameRate)")
+        val fps = validFps.minByOrNull { kotlin.math.abs(it - reqFrameRate) } ?: 24
+        android.util.Log.d("StreamSessionManager", "Using quality=$quality @ ${fps}fps (requested $reqFrameRate), attempt=$startAttempt")
 
         // 1) Create a DeviceSession for the selected device
         Wearables.createSession(wearablesManager.deviceSelector)
@@ -200,12 +212,13 @@ class StreamSessionManager(
                         android.util.Log.d("StreamSessionManager", "Session state: $state")
                         if (state == DeviceSessionState.STARTED && !streamAttached) {
                             streamAttached = true
-                            attachStream(createdSession, quality, fps, compress)
+                            attachStream(createdSession, quality, fps)
                         }
                     }
                 }
 
                 createdSession.start()
+                startWatchdog()
             }
             .onFailure { error, _ ->
                 android.util.Log.e("StreamSessionManager", "createSession failed: ${error.description}")
@@ -213,14 +226,51 @@ class StreamSessionManager(
             }
     }
 
-    private fun attachStream(session: DeviceSession, quality: VideoQuality, fps: Int, compress: Boolean) {
-        android.util.Log.d("StreamSessionManager", "Attaching stream (compress=$compress)...")
+    /**
+     * If the stream doesn't reach STREAMING within the timeout, the SDK likely got stuck
+     * starting — typically a quick restart where the previous session hadn't fully released
+     * the glasses camera. Tear down and retry with a fresh session (the old one finishes
+     * releasing in the meantime). This fixes the "frozen on the next stream" resume bug.
+     */
+    private fun startWatchdog() {
+        watchdogJob?.cancel()
+        watchdogJob = scope.launch {
+            delay(START_TIMEOUT_MS)
+            if (session != null && _statusFlow.value != "streaming") {
+                if (startAttempt < MAX_START_ATTEMPTS - 1) {
+                    startAttempt++
+                    android.util.Log.w("StreamSessionManager", "Stream stuck starting — retry $startAttempt with a fresh session")
+                    teardownSession()
+                    delay(800) // let the SDK/glasses release the camera before retrying
+                    startStreamingAsync()
+                } else {
+                    android.util.Log.e("StreamSessionManager", "Stream failed to start after $MAX_START_ATTEMPTS attempts")
+                    _statusFlow.value = "error"
+                }
+            }
+        }
+    }
+
+    /** Cancel observers and stop the current session/stream without resetting retry state. */
+    private fun teardownSession() {
+        videoJob?.cancel(); videoJob = null
+        streamStateJob?.cancel(); streamStateJob = null
+        streamErrorJob?.cancel(); streamErrorJob = null
+        sessionStateJob?.cancel(); sessionStateJob = null
+        sessionErrorJob?.cancel(); sessionErrorJob = null
+        streamAttached = false
+        stream?.stop(); stream = null
+        session?.stop(); session = null
+    }
+
+    private fun attachStream(session: DeviceSession, quality: VideoQuality, fps: Int) {
+        android.util.Log.d("StreamSessionManager", "Attaching stream (compress=$compressVideo)...")
         session
             .addStream(
                 StreamConfiguration(
                     videoQuality = quality,
                     frameRate = fps,
-                    compressVideo = compress
+                    compressVideo = compressVideo
                 )
             )
             .onSuccess { addedStream ->
@@ -233,6 +283,10 @@ class StreamSessionManager(
                 streamStateJob = scope.launch {
                     addedStream.state.collect { streamState ->
                         android.util.Log.d("StreamSessionManager", "Stream state: $streamState")
+                        if (streamState == StreamState.STREAMING) {
+                            // Started successfully — cancel the start-watchdog so it can't retry.
+                            watchdogJob?.cancel(); watchdogJob = null
+                        }
                         _statusFlow.value = when (streamState) {
                             StreamState.STARTING -> "starting"
                             StreamState.STARTED -> "starting"
@@ -271,17 +325,9 @@ class StreamSessionManager(
     }
 
     fun stopStreaming() {
-        videoJob?.cancel(); videoJob = null
-        streamStateJob?.cancel(); streamStateJob = null
-        streamErrorJob?.cancel(); streamErrorJob = null
-        sessionStateJob?.cancel(); sessionStateJob = null
-        sessionErrorJob?.cancel(); sessionErrorJob = null
-        streamAttached = false
-
-        stream?.stop()
-        stream = null
-        session?.stop()
-        session = null
+        watchdogJob?.cancel(); watchdogJob = null
+        startAttempt = 0
+        teardownSession()
         _statusFlow.value = "stopped"
     }
 

@@ -109,8 +109,11 @@ let decodedQueue = [];
 let pacingTimer = null;
 let pacingPrimed = false;
 let lastReleaseTime = 0;
-const JITTER_TARGET_FRAMES = 2;   // prime depth before release (~2-frame buffer)
-const JITTER_MAX_FRAMES = 10;     // hard cap; absorbs backpressure bursts, drop oldest beyond
+// Jitter buffer depths — tunable at runtime via setLowLatencyMode() (Settings toggle).
+//   smooth (default): target 2 / max 8  — absorbs more burst, a bit more latency
+//   low-latency:      target 1 / max 3  — ~1 frame of buffering, less burst tolerance
+let jitterTargetFrames = 2;       // prime depth before release
+let jitterMaxFrames = 8;          // hard cap; drop oldest beyond to bound latency
 let hevcFrameIntervalMs = 42;     // nominal release cadence (~24fps; updated from decoded pts)
 let lastDecodedPtsUs = 0;
 
@@ -829,7 +832,7 @@ async function processI420FrameInternal(blob) {
 // Queue a decoded frame and start the paced release loop. Drops oldest if backed up.
 function enqueueDecodedFrame(frame) {
   decodedQueue.push(frame);
-  while (decodedQueue.length > JITTER_MAX_FRAMES) {
+  while (decodedQueue.length > jitterMaxFrames) {
     const old = decodedQueue.shift();
     try { old.close(); } catch (_) {}
     hevcFramesDropped++;
@@ -844,7 +847,7 @@ function startPacing() {
   pacingTimer = setInterval(() => {
     if (decodedQueue.length === 0) return;
     if (!pacingPrimed) {
-      if (decodedQueue.length < JITTER_TARGET_FRAMES) return; // wait to prime the buffer
+      if (decodedQueue.length < jitterTargetFrames) return; // wait to prime the buffer
       pacingPrimed = true;
     }
     const now = performance.now();
@@ -853,7 +856,7 @@ function startPacing() {
     // target — recovering latency without hard-draining the whole burst back into jitter.
     // (Overflow past JITTER_MAX_FRAMES still drops oldest in enqueue as a hard latency cap.)
     let interval = hevcFrameIntervalMs;
-    const over = decodedQueue.length - JITTER_TARGET_FRAMES;
+    const over = decodedQueue.length - jitterTargetFrames;
     if (over > 0) {
       interval = Math.max(hevcFrameIntervalMs * 0.4, hevcFrameIntervalMs - over * 6);
     }
@@ -992,6 +995,15 @@ function setCompressedMode(enabled) {
   compressedMode = !!enabled;
   console.log('[JitsiBridge] compressedMode = ' + compressedMode);
   return compressedMode;
+}
+
+// Jitter-buffer depth trade-off (Settings toggle): shallow = lower latency, deep = smoother.
+function setLowLatencyMode(enabled) {
+  if (enabled) { jitterTargetFrames = 1; jitterMaxFrames = 3; }
+  else { jitterTargetFrames = 2; jitterMaxFrames = 8; }
+  console.log('[JitsiBridge] lowLatencyMode=' + !!enabled +
+    ' (jitter target=' + jitterTargetFrames + ' max=' + jitterMaxFrames + ')');
+  return !!enabled;
 }
 
 // Status display
@@ -2379,6 +2391,7 @@ window.startVideoTrack = startVideoTrack;
 window.stopVideoTrack = stopVideoTrack;
 window.setVideoSource = setVideoSource;
 window.setCompressedMode = setCompressedMode;
+window.setLowLatencyMode = setLowLatencyMode;
 window.getVideoSourceMode = getVideoSourceMode;
 window.diagnosePeerConnection = diagnosePeerConnection;
 
