@@ -109,6 +109,10 @@ class _StatsOverlayState extends State<StatsOverlay> {
     // since it knows what's actually being used for WebRTC
     final isDirectCamera = webViewMode == 'camera' && hasCameraStream;
 
+    // Codec actually in use, reported by native ('hevc' when compressed, else 'i420')
+    final codec = (_nativeStats['codec'] ?? 'i420').toString();
+    final isHevc = codec == 'hevc';
+
     // For display, use native source but validate against WebView mode
     String videoSource = nativeVideoSource;
     if (isDirectCamera && nativeVideoSource == 'glasses') {
@@ -177,7 +181,7 @@ class _StatsOverlayState extends State<StatsOverlay> {
           children: [
             // Pipeline header with source indicator
             _buildSectionHeader('PIPELINE STATS'),
-            _buildStatRow('Source', _formatVideoSource(videoSource, isDirectCamera)),
+            _buildStatRow('Source', _formatVideoSource(videoSource, isDirectCamera, isHevc)),
             const SizedBox(height: 4),
 
             // Direct camera mode - minimal stats (no processing pipeline)
@@ -197,7 +201,7 @@ class _StatsOverlayState extends State<StatsOverlay> {
             ] else ...[
               // Capture stats - different for glasses vs camera (legacy JPEG path)
               if (isGlassesMode) ...[
-                _buildSectionLabel('Capture (I420)'),
+                _buildSectionLabel(isHevc ? 'Capture (HEVC)' : 'Capture (I420)'),
                 _buildStatRow('SDK Interval', '${_nativeStats['avgFrameIntervalMs'] ?? 0}ms',
                     valueColor: ((_nativeStats['avgFrameIntervalMs'] ?? 0) as num) > 50 ? Colors.orangeAccent : Colors.greenAccent),
                 _buildStatRow('Recv/Proc/Skip', '$nativeReceived/$nativeProcessed/$nativeSkipped'),
@@ -240,6 +244,7 @@ class _StatsOverlayState extends State<StatsOverlay> {
               _buildStatRow('Arrival Interval', '${_webViewStats.avgArrivalMs}ms'),
               _buildStatRow('E2E Latency', '${_webViewStats.lastLatencyMs}ms (avg ${_webViewStats.avgLatencyMs}ms, max ${_webViewStats.maxLatencyMs}ms)'),
               _buildStatRow('FPS Out', '${_webViewStats.fps}'),
+              _buildStatRow('In Bitrate', _webViewStats.bitrateFormatted),
               _buildStatRow('Resolution', _webViewStats.resolution),
               const SizedBox(height: 6),
 
@@ -253,6 +258,11 @@ class _StatsOverlayState extends State<StatsOverlay> {
                   valueColor: _webViewStats.rtcQualityLimitation == 'none' ? Colors.greenAccent : Colors.orangeAccent),
               _buildStatRow('Enc Resolution', '${_webViewStats.rtcEncodeWidth}x${_webViewStats.rtcEncodeHeight}'),
               _buildStatRow('Enc FPS', '${_webViewStats.rtcEncodeFps}'),
+              _buildStatRow('Send Bitrate',
+                  _webViewStats.rtcSendBitrate >= 1000
+                      ? '${(_webViewStats.rtcSendBitrate / 1000).toStringAsFixed(1)} Mbps'
+                      : '${_webViewStats.rtcSendBitrate} kbps',
+                  valueColor: _webViewStats.rtcSendBitrate > 0 ? Colors.greenAccent : Colors.orangeAccent),
               _buildStatRow('Retransmits', '${_webViewStats.rtcRetransmits}',
                   valueColor: _webViewStats.rtcRetransmits > 0 ? Colors.orangeAccent : Colors.greenAccent),
               const SizedBox(height: 6),
@@ -298,10 +308,10 @@ class _StatsOverlayState extends State<StatsOverlay> {
     );
   }
 
-  String _formatVideoSource(String source, bool isDirectCamera) {
+  String _formatVideoSource(String source, bool isDirectCamera, bool isHevc) {
     switch (source) {
       case 'glasses':
-        return 'Glasses (I420)';
+        return isHevc ? 'Glasses (HEVC)' : 'Glasses (I420)';
       case 'frontCamera':
         return isDirectCamera ? 'Front Camera (Direct)' : 'Front Camera (JPEG)';
       case 'backCamera':

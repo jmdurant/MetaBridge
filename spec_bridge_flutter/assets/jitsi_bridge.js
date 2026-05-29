@@ -46,6 +46,10 @@ let rtcBytesSent = 0;
 let rtcPacketsSent = 0;
 let rtcRetransmittedPackets = 0;
 let rtcStatsCollectorInterval = null;
+// Outbound send bitrate (what we actually put on the wire), computed from bytesSent delta
+let rtcSendBitrateKbps = 0;
+let lastRtcBytesSent = 0;
+let lastRtcBitrateTime = 0;
 
 // Stats tracking (must be declared before use in handleBinaryFrame)
 let frameCount = 0;
@@ -78,6 +82,24 @@ const cameraPreview = document.getElementById('cameraPreview');
 // Canvas setup - use WebGL for I420 YUV rendering
 const canvas = document.getElementById('videoCanvas');
 let canvasStream = null;
+
+// --- Step 2: compressed HEVC path (WebCodecs -> MediaStreamTrackGenerator) ---
+// When compressedMode is on, glasses frames arrive as HEVC ("HVC1" magic), are
+// hardware-decoded via WebCodecs, and pushed into a MediaStreamTrackGenerator
+// track that feeds WebRTC directly — bypassing the WebGL/canvas/captureStream path.
+let compressedMode = false;
+let videoDecoder = null;            // WebCodecs VideoDecoder
+let decoderConfigured = false;
+let hevcTrackGenerator = null;      // MediaStreamTrackGenerator (video)
+let hevcTrackWriter = null;         // its WritableStreamDefaultWriter
+let latestHevcConfig = null;        // cached VPS/SPS/PPS (Annex-B) if sent as a separate frame
+let hevcKeyframeSeen = false;
+let hevcFramesDecoded = 0;
+let hevcDecodeErrors = 0;
+let hevcWidth = 640;
+let hevcHeight = 360;
+let hevcDecodedWidth = 0;   // actual decoded frame size (what we feed WebRTC)
+let hevcDecodedHeight = 0;
 
 // WebGL state for I420 rendering
 let gl = null;
@@ -480,13 +502,17 @@ async function detectAndProcessFrame(blob) {
   isProcessingFrame = true;
 
   try {
-    // Read first 2 bytes to detect format
-    const headerSlice = blob.slice(0, 2);
+    // Read first 4 bytes to detect format
+    const headerSlice = blob.slice(0, 4);
     const headerBuffer = await headerSlice.arrayBuffer();
     const headerBytes = new Uint8Array(headerBuffer);
 
-    // JPEG magic bytes: 0xFF 0xD8
-    if (headerBytes[0] === 0xFF && headerBytes[1] === 0xD8) {
+    // HEVC magic: "HVC1" (0x48 0x56 0x43 0x31)
+    if (headerBytes[0] === 0x48 && headerBytes[1] === 0x56 &&
+        headerBytes[2] === 0x43 && headerBytes[3] === 0x31) {
+      await processHevcFrame(blob);
+    } else if (headerBytes[0] === 0xFF && headerBytes[1] === 0xD8) {
+      // JPEG magic bytes: 0xFF 0xD8
       await processJpegFrame(blob);
     } else {
       await processI420FrameInternal(blob);
@@ -733,6 +759,116 @@ async function processI420FrameInternal(blob) {
     console.error('[JitsiBridge] Frame processing error:', e);
   }
   // Note: isProcessingFrame is set to false in detectAndProcessFrame wrapper
+}
+
+// --- Step 2: HEVC (WebCodecs) processing ---
+
+// Create the MediaStreamTrackGenerator + writer that the decoder feeds.
+function createHevcTrackStream() {
+  if (hevcTrackWriter) { try { hevcTrackWriter.close(); } catch (_) {} hevcTrackWriter = null; }
+  hevcTrackGenerator = new MediaStreamTrackGenerator({ kind: 'video' });
+  hevcTrackWriter = hevcTrackGenerator.writable.getWriter();
+  console.log('[JitsiBridge] HEVC: created MediaStreamTrackGenerator');
+  return new MediaStream([hevcTrackGenerator]);
+}
+
+// Lazily create + configure the WebCodecs HEVC decoder.
+function ensureHevcDecoder(codedWidth, codedHeight) {
+  if (videoDecoder && decoderConfigured) return;
+  videoDecoder = new VideoDecoder({
+    output: (frame) => {
+      try {
+        // Track the real decoded size (updates live if the source/ABR changes it)
+        hevcDecodedWidth = frame.displayWidth || frame.codedWidth || hevcDecodedWidth;
+        hevcDecodedHeight = frame.displayHeight || frame.codedHeight || hevcDecodedHeight;
+        if (hevcTrackWriter) {
+          hevcTrackWriter.write(frame);  // consumes/closes the VideoFrame
+        } else {
+          frame.close();
+        }
+        hevcFramesDecoded++;
+        framesDrawn++;  // reuse existing fps stat
+        if (hevcFramesDecoded <= 3 || hevcFramesDecoded % 100 === 0) {
+          console.log('[JitsiBridge] HEVC decoded frame #' + hevcFramesDecoded);
+        }
+      } catch (e) {
+        try { frame.close(); } catch (_) {}
+        console.error('[JitsiBridge] HEVC output write error:', e.message);
+      }
+    },
+    error: (e) => {
+      hevcDecodeErrors++;
+      console.error('[JitsiBridge] HEVC decoder error:', e.message);
+    },
+  });
+  // hev1.* => in-band parameter sets (Annex-B). Profile/level guessed; decoder is
+  // tolerant and reads the real values from in-stream SPS. optimizeForLatency avoids
+  // reorder buffering (the glasses send in decode order).
+  const cfg = {
+    codec: 'hev1.1.6.L93.B0',
+    codedWidth: codedWidth || 640,
+    codedHeight: codedHeight || 360,
+    optimizeForLatency: true,
+    hardwareAcceleration: 'prefer-hardware',
+  };
+  videoDecoder.configure(cfg);
+  decoderConfigured = true;
+  console.log('[JitsiBridge] HEVC VideoDecoder configured: ' + JSON.stringify(cfg));
+}
+
+// Parse a HEVC frame from native ("HVC1" wire format) and feed the decoder.
+async function processHevcFrame(blob) {
+  try {
+    const buf = await blob.arrayBuffer();
+    if (buf.byteLength < 21) { console.warn('[JitsiBridge] HEVC frame too small'); return; }
+    const dv = new DataView(buf);
+    const flags = dv.getUint8(4);
+    const isCodecConfig = (flags & 0x01) !== 0;
+    const isKeyframe = (flags & 0x02) !== 0;
+    const ptsUs = Number(dv.getBigInt64(5, true));
+    const width = dv.getUint32(13, true);
+    const height = dv.getUint32(17, true);
+    if (width > 0 && height > 0) { hevcWidth = width; hevcHeight = height; }
+    const payload = new Uint8Array(buf, 21);
+
+    // A config-only frame (parameter sets, no slice): cache for in-band prepend, don't decode.
+    if (isCodecConfig && !isKeyframe) {
+      latestHevcConfig = payload.slice();
+      console.log('[JitsiBridge] HEVC: cached codec config (' + latestHevcConfig.length + ' bytes)');
+      return;
+    }
+
+    let chunkData = payload;
+    if (isKeyframe) {
+      // Ensure parameter sets precede the keyframe (prepend cached config if not in-band).
+      if (!isCodecConfig && latestHevcConfig) {
+        const merged = new Uint8Array(latestHevcConfig.length + payload.length);
+        merged.set(latestHevcConfig, 0);
+        merged.set(payload, latestHevcConfig.length);
+        chunkData = merged;
+      }
+      ensureHevcDecoder(width, height);
+      hevcKeyframeSeen = true;
+    }
+
+    if (!hevcKeyframeSeen) return;                       // wait for first keyframe
+    if (!videoDecoder || videoDecoder.state !== 'configured') return;
+
+    videoDecoder.decode(new EncodedVideoChunk({
+      type: isKeyframe ? 'key' : 'delta',
+      timestamp: ptsUs,
+      data: chunkData,
+    }));
+  } catch (e) {
+    console.error('[JitsiBridge] processHevcFrame error:', e.message);
+  }
+}
+
+// Called from Flutter (stream_service) before joining, so startVideoTrack picks the right path.
+function setCompressedMode(enabled) {
+  compressedMode = !!enabled;
+  console.log('[JitsiBridge] compressedMode = ' + compressedMode);
+  return compressedMode;
 }
 
 // Status display
@@ -1184,7 +1320,12 @@ function getStats() {
   let resolution = canvas.width + 'x' + canvas.height;
   let width = canvas.width;
   let height = canvas.height;
-  if (videoSourceMode === 'camera' && cameraStream) {
+  if (compressedMode && hevcDecodedWidth > 0) {
+    // Compressed mode bypasses the canvas — report the real decoded frame size
+    width = hevcDecodedWidth;
+    height = hevcDecodedHeight;
+    resolution = width + 'x' + height;
+  } else if (videoSourceMode === 'camera' && cameraStream) {
     const videoTrack = cameraStream.getVideoTracks()[0];
     if (videoTrack) {
       const settings = videoTrack.getSettings();
@@ -1229,6 +1370,7 @@ function getStats() {
     rtcEncodeHeight: rtcEncodeHeight,
     rtcEncodeFps: rtcEncodeFps,
     rtcBytesSent: rtcBytesSent,
+    rtcSendBitrate: rtcSendBitrateKbps,
     rtcRetransmits: rtcRetransmittedPackets
   };
 }
@@ -1285,6 +1427,17 @@ async function collectRtcStats() {
         rtcBytesSent = report.bytesSent || 0;
         rtcPacketsSent = report.packetsSent || 0;
         rtcRetransmittedPackets = report.retransmittedPacketsSent || 0;
+
+        // Outbound send bitrate (kbps) from bytesSent delta over wall-clock
+        const nowT = Date.now();
+        if (lastRtcBitrateTime > 0) {
+          const dtMs = nowT - lastRtcBitrateTime;
+          if (dtMs > 0) {
+            rtcSendBitrateKbps = Math.round((rtcBytesSent - lastRtcBytesSent) * 8 / dtMs); // bytes*8/ms == kbps
+          }
+        }
+        lastRtcBitrateTime = nowT;
+        lastRtcBytesSent = rtcBytesSent;
 
         // Debug log once per 10 collections when we have stats
         if (rtcFramesEncoded > 0 && rtcFramesEncoded % 100 < 10) {
@@ -1862,6 +2015,37 @@ async function startVideoTrack() {
           width: { ideal: width }
         }
       }];
+    } else if (compressedMode) {
+      // Compressed HEVC mode: WebRTC track is fed by the WebCodecs decoder via a
+      // MediaStreamTrackGenerator — no canvas/captureStream.
+      console.log('[JitsiBridge] Using MediaStreamTrackGenerator for compressed HEVC');
+      const genStream = createHevcTrackStream();
+      // Local preview: the decoded track feeds a <video> (canvas is unused in HEVC mode).
+      // The same MediaStreamTrack drives both this preview and the WebRTC sender.
+      try {
+        const preview = document.getElementById('cameraPreview');
+        if (preview) {
+          preview.srcObject = genStream;
+          const p = preview.play();
+          if (p && p.catch) p.catch(() => {});
+        }
+        document.body.classList.add('hevc-mode');
+      } catch (e) {
+        console.warn('[JitsiBridge] HEVC preview wiring failed:', e.message);
+      }
+      videoTrackInfo = [{
+        stream: genStream,
+        track: genStream.getVideoTracks()[0],
+        sourceType: 'canvas',
+        mediaType: 'video',
+        videoType: 'camera',
+        constraints: {
+          width: { ideal: hevcWidth },
+          height: { ideal: hevcHeight },
+          frameRate: { ideal: 24 }
+        }
+      }];
+      console.log('[JitsiBridge] HEVC generator track constraints:', hevcWidth, 'x', hevcHeight, '@ 24fps');
     } else {
       // Canvas mode: use captureStream for glasses frames
       console.log('[JitsiBridge] Using canvas captureStream for glasses');
@@ -1940,6 +2124,22 @@ async function stopVideoTrack() {
       canvasStream.getTracks().forEach(track => track.stop());
       canvasStream = null;
     }
+    // Tear down the HEVC decode pipeline if it was used
+    if (videoDecoder) {
+      try { videoDecoder.close(); } catch (_) {}
+      videoDecoder = null;
+      decoderConfigured = false;
+    }
+    if (hevcTrackWriter) { try { hevcTrackWriter.close(); } catch (_) {} hevcTrackWriter = null; }
+    if (hevcTrackGenerator) { try { hevcTrackGenerator.stop(); } catch (_) {} hevcTrackGenerator = null; }
+    hevcKeyframeSeen = false;
+    latestHevcConfig = null;
+    // Restore the canvas-based preview layout
+    try {
+      document.body.classList.remove('hevc-mode');
+      const cp = document.getElementById('cameraPreview');
+      if (cp) cp.srcObject = null;
+    } catch (_) {}
     // Note: don't stop cameraStream here - it's managed by setVideoSource
 
     videoTrackStarted = false;
@@ -2054,6 +2254,7 @@ window.logProfileStats = logProfileStats;
 window.startVideoTrack = startVideoTrack;
 window.stopVideoTrack = stopVideoTrack;
 window.setVideoSource = setVideoSource;
+window.setCompressedMode = setCompressedMode;
 window.getVideoSourceMode = getVideoSourceMode;
 window.diagnosePeerConnection = diagnosePeerConnection;
 

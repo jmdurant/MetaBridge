@@ -211,6 +211,10 @@ class StreamService extends ChangeNotifier {
         await _bluetoothAudioService.forcePhoneMic();
       }
 
+      // Tell the WebView whether to expect compressed HEVC frames (glasses mode only),
+      // so its video track uses the WebCodecs + MediaStreamTrackGenerator path.
+      await _libJitsiService!.setCompressedMode(isGlassesMode && compressVideo);
+
       debugPrint('StreamService: [${ isGlassesMode ? "Glasses" : "Camera"}] Joining meeting (usePhoneMic=$usePhoneMic)...');
       await _libJitsiService!.joinMeeting(config, usePhoneMic: usePhoneMic);
 

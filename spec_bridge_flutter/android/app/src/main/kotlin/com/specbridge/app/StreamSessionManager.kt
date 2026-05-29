@@ -383,38 +383,100 @@ class StreamSessionManager(
     }
 
     /**
-     * COMPRESSED HEVC path (experimental, opt-in). The SDK delivers the glasses' native HEVC
-     * bitstream — no decode, lower latency, works in background. Forwarded as-is for a future
-     * native WebRTC bridge. NOTE: the current WebView/JPEG pipeline cannot consume this yet, so
-     * compressVideo defaults to false. Wiring the WebRTC receive side is the next step.
+     * COMPRESSED HEVC path (Step 2). The SDK delivers the glasses' native HEVC bitstream (no
+     * on-phone decode). We wrap it in a self-describing frame so the WebView can rebuild
+     * EncodedVideoChunks and decode via WebCodecs → MediaStreamTrackGenerator → WebRTC.
+     *
+     * Wire format (little-endian), distinct from the I420 (12-byte) and JPEG (0xFFD8) formats:
+     *   [0..3]   magic "HVC1" (0x48 0x56 0x43 0x31)
+     *   [4]      flags: bit0 = isCodecConfig, bit1 = isKeyframe (IRAP NAL present)
+     *   [5..12]  presentationTimeUs (int64 LE)
+     *   [13..16] width  (uint32 LE)
+     *   [17..20] height (uint32 LE)
+     *   [21..]   HEVC bitstream (as delivered by the SDK — Annex-B expected; confirmed via logs)
      */
     private fun processCompressedFrame(videoFrame: VideoFrame, processStartTime: Long) {
         compressedFrameCount++
-        if (compressedFrameCount == 1L) {
-            android.util.Log.w(
+
+        val buffer = videoFrame.buffer
+        val payloadSize = buffer.remaining()
+        if (payloadSize <= 0) return
+
+        val isCodecConfig = videoFrame.isCodecConfig
+        val ptsUs = videoFrame.presentationTimeUs
+        val width = videoFrame.width
+        val height = videoFrame.height
+
+        // Copy payload out of the SDK buffer
+        val payload = ByteArray(payloadSize)
+        val originalPosition = buffer.position()
+        buffer.get(payload, 0, payloadSize)
+        buffer.position(originalPosition)
+
+        // Inspect NAL units (Annex-B) to detect keyframe / parameter sets.
+        val nal = inspectHevcNals(payload)
+
+        // Diagnostics for the first few frames so we can confirm the exact bitstream format.
+        if (compressedFrameCount <= 5L) {
+            android.util.Log.d(
                 "StreamSessionManager",
-                "Compressed HEVC frames arriving — downstream WebRTC consumption is not wired yet (see class docs)."
+                "HEVC frame #$compressedFrameCount size=$payloadSize isCodecConfig=$isCodecConfig " +
+                    "key=${nal.isKeyframe} paramSets=${nal.hasParamSets} nalTypes=${nal.types} " +
+                    "first16=${payload.take(16).joinToString(" ") { (it.toInt() and 0xFF).toString(16).padStart(2, '0') }}"
             )
         }
 
-        val buffer = videoFrame.buffer
-        val dataSize = buffer.remaining()
-        if (dataSize <= 0) return
+        val HEADER = 21
+        val outputBuffer = ByteArray(HEADER + payloadSize)
+        val hb = ByteBuffer.wrap(outputBuffer).order(ByteOrder.LITTLE_ENDIAN)
+        hb.put('H'.code.toByte()); hb.put('V'.code.toByte()); hb.put('C'.code.toByte()); hb.put('1'.code.toByte())
+        var flags = 0
+        if (isCodecConfig || nal.hasParamSets) flags = flags or 0x01
+        if (nal.isKeyframe) flags = flags or 0x02
+        hb.put(flags.toByte())
+        hb.putLong(ptsUs)
+        hb.putInt(width)
+        hb.putInt(height)
+        payload.copyInto(outputBuffer, HEADER, 0, payloadSize)
 
-        val out = ByteArray(dataSize)
-        val originalPosition = buffer.position()
-        buffer.get(out, 0, dataSize)
-        buffer.position(originalPosition)
-
-        // Forward the raw encoded payload. A future HEVC-aware downstream must know the codec
-        // out-of-band (no I420 header is prepended here — HEVC carries its own NAL structure).
         onFrameReady?.let {
-            it(out)
+            it(outputBuffer)
             framesProcessed++
         }
 
         lastEncodeTimeMs = System.currentTimeMillis() - processStartTime
         totalEncodeTimeMs += lastEncodeTimeMs
+    }
+
+    private data class NalInfo(val isKeyframe: Boolean, val hasParamSets: Boolean, val types: List<Int>)
+
+    /**
+     * Scan an Annex-B HEVC bitstream for NAL unit types.
+     * HEVC NAL header: type = (firstByteAfterStartCode >> 1) & 0x3F.
+     *  - IRAP/keyframe types: 16..21 (BLA/IDR/CRA)
+     *  - Parameter sets: VPS=32, SPS=33, PPS=34
+     */
+    private fun inspectHevcNals(data: ByteArray): NalInfo {
+        val types = ArrayList<Int>(4)
+        var isKey = false
+        var hasParams = false
+        var i = 0
+        val n = data.size
+        while (i + 3 < n) {
+            // Find start code 00 00 01 (allowing a leading 00 for 00 00 00 01)
+            if (data[i].toInt() == 0 && data[i + 1].toInt() == 0 && data[i + 2].toInt() == 1) {
+                val hdr = data[i + 3].toInt() and 0xFF
+                val type = (hdr shr 1) and 0x3F
+                types.add(type)
+                if (type in 16..21) isKey = true
+                if (type in 32..34) hasParams = true
+                i += 3
+            } else {
+                i++
+            }
+            if (types.size >= 8) break // enough to classify
+        }
+        return NalInfo(isKey, hasParams, types)
     }
 
     // MARK: - Cleanup

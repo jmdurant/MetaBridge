@@ -75,6 +75,10 @@
     body.camera-mode #videoCanvas { display: none; }
     body.camera-mode #cameraPreview { display: block; }
 
+    /* Compressed HEVC mode: the decoded track feeds a <video> preview; canvas is unused */
+    body.hevc-mode #videoCanvas { display: none; }
+    body.hevc-mode #cameraPreview { display: block; }
+
     /* Waiting for peer message */
     #waitingMessage {
       position: absolute;

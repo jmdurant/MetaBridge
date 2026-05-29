@@ -43,6 +43,7 @@ class LibJitsiStats {
   final int rtcEncodeHeight;
   final int rtcEncodeFps;
   final int rtcBytesSent;
+  final int rtcSendBitrate; // kbps, outbound (what we send on the wire)
   final int rtcRetransmits;
 
   const LibJitsiStats({
@@ -79,6 +80,7 @@ class LibJitsiStats {
     this.rtcEncodeHeight = 0,
     this.rtcEncodeFps = 0,
     this.rtcBytesSent = 0,
+    this.rtcSendBitrate = 0,
     this.rtcRetransmits = 0,
   });
 
@@ -117,6 +119,7 @@ class LibJitsiStats {
       rtcEncodeHeight: json['rtcEncodeHeight'] as int? ?? 0,
       rtcEncodeFps: json['rtcEncodeFps'] as int? ?? 0,
       rtcBytesSent: json['rtcBytesSent'] as int? ?? 0,
+      rtcSendBitrate: json['rtcSendBitrate'] as int? ?? 0,
       rtcRetransmits: json['rtcRetransmits'] as int? ?? 0,
     );
   }
@@ -362,6 +365,19 @@ class LibJitsiService extends ChangeNotifier {
   void _updateState(LibJitsiState newState) {
     _currentState = newState;
     notifyListeners();
+  }
+
+  /// Tell the WebView whether glasses frames will arrive as compressed HEVC.
+  /// Must be called before joining so startVideoTrack() picks the WebCodecs +
+  /// MediaStreamTrackGenerator path instead of canvas.captureStream().
+  Future<void> setCompressedMode(bool enabled) async {
+    if (_controller == null) return;
+    try {
+      await _controller?.evaluateJavascript(source: 'setCompressedMode($enabled)');
+      debugPrint('LibJitsiService: compressedMode set to $enabled');
+    } catch (e) {
+      debugPrint('LibJitsiService: setCompressedMode error: $e');
+    }
   }
 
   /// Wait for WebSocket to be connected (for glasses frame pipeline)
