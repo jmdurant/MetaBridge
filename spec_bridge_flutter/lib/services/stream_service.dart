@@ -137,6 +137,7 @@ class StreamService extends ChangeNotifier {
     VideoQuality videoQuality = VideoQuality.medium,
     int frameRate = 15, // Default to 15fps for stable Bluetooth
     bool useNativeFrameServer = true,
+    bool compressVideo = false, // Experimental HEVC passthrough (SDK 0.6.0+)
   }) async {
     try {
       if (_libJitsiService == null) {
@@ -226,6 +227,7 @@ class StreamService extends ChangeNotifier {
         final captureStarted = await _glassesService.startStreaming(
           videoQuality: videoQuality.name,
           frameRate: frameRate,
+          compressVideo: compressVideo,
         );
         if (!captureStarted) {
           throw Exception('Failed to start video capture');

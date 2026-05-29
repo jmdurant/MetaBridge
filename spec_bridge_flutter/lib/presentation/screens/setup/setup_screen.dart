@@ -85,6 +85,16 @@ class _SetupScreenState extends State<SetupScreen> {
     }
   }
 
+  Future<void> _openFirmwareUpdate() async {
+    final glassesService = context.read<GlassesService>();
+    final opened = await glassesService.openFirmwareUpdate();
+    if (!opened && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open the Meta AI update screen')),
+      );
+    }
+  }
+
   Future<void> _startStreaming() async {
     if (_roomController.text.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -329,6 +339,33 @@ class _SetupScreenState extends State<SetupScreen> {
               Text(
                 state.errorMessage!,
                 style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ],
+            if (state.firmwareUpdateRequired) ...[
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.amber.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.amber),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.system_update, color: Colors.amber),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Text(
+                        'These glasses need a firmware/app update before they can stream.',
+                        style: TextStyle(fontSize: 13),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: _openFirmwareUpdate,
+                      child: const Text('Update'),
+                    ),
+                  ],
+                ),
               ),
             ],
           ],

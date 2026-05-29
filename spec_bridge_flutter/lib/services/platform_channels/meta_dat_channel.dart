@@ -13,12 +13,19 @@ class StreamConfig {
   final VideoSource videoSource;
   final String videoQuality; // low, medium, high
 
+  /// Request compressed HEVC frames from the glasses (Meta SDK 0.6.0+).
+  /// Defaults to false: the raw-I420 pipeline the WebView consumes today.
+  /// NOTE: the WebView/WebRTC receive side does not yet decode HEVC, so enabling
+  /// this currently has no end-to-end effect — it's plumbed for the next step.
+  final bool compressVideo;
+
   const StreamConfig({
     this.width = 1280,
     this.height = 720,
     this.frameRate = 24,
     this.videoSource = VideoSource.glasses,
     this.videoQuality = 'medium',
+    this.compressVideo = false,
   });
 
   Map<String, dynamic> toMap() => {
@@ -27,6 +34,7 @@ class StreamConfig {
         'frameRate': frameRate,
         'videoSource': videoSource.name,
         'videoQuality': videoQuality,
+        'compressVideo': compressVideo,
       };
 }
 
@@ -48,6 +56,13 @@ class StreamStatusEvent extends MetaDATEvent {
 class FramePreviewEvent extends MetaDATEvent {
   final Uint8List frameData;
   FramePreviewEvent(this.frameData);
+}
+
+/// Emitted when device compatibility changes — e.g. the connected glasses
+/// (notably older Gen 1 Ray-Bans) need a firmware/app update to stream.
+class DeviceCompatibilityEvent extends MetaDATEvent {
+  final bool firmwareUpdateRequired;
+  DeviceCompatibilityEvent({required this.firmwareUpdateRequired});
 }
 
 /// Abstract interface for Meta DAT platform channel
@@ -75,6 +90,10 @@ abstract class MetaDATChannel {
 
   /// Disconnect from glasses
   Future<void> disconnect();
+
+  /// Open the Meta AI firmware-update screen for the connected glasses.
+  /// Used when a device reports it needs an update to stream.
+  Future<bool> openFirmwareUpdate();
 
   /// Get streaming stats from native side
   Future<Map<String, dynamic>> getStreamStats();
@@ -163,6 +182,11 @@ class MetaDATChannelImpl implements MetaDATChannel {
         final status = event['status'] as String? ?? 'unknown';
         final error = event['error'] as String?;
         _eventController.add(StreamStatusEvent(status, errorMessage: error));
+        break;
+      case 'deviceCompatibility':
+        final required = event['firmwareUpdateRequired'] as bool? ?? false;
+        _eventController
+            .add(DeviceCompatibilityEvent(firmwareUpdateRequired: required));
         break;
       case 'incomingUrl':
         // URL events are handled separately via deep links
@@ -308,6 +332,18 @@ class MetaDATChannelImpl implements MetaDATChannel {
       await _methodChannel.invokeMethod<void>('disconnect');
     } on PlatformException {
       // Ignore errors on disconnect
+    }
+  }
+
+  @override
+  Future<bool> openFirmwareUpdate() async {
+    try {
+      final result =
+          await _methodChannel.invokeMethod<bool>('openFirmwareUpdate');
+      return result ?? false;
+    } on PlatformException catch (e) {
+      debugPrint('MetaDATChannel: openFirmwareUpdate error: $e');
+      return false;
     }
   }
 

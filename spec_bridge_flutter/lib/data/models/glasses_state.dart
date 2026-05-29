@@ -32,12 +32,17 @@ class GlassesState extends Equatable {
   final bool isConfigured;
   final VideoSource videoSource;
 
+  /// True when the connected glasses report they need a firmware/app update to
+  /// stream (DeviceCompatibility.DEVICE_UPDATE_REQUIRED). Common on older Gen 1.
+  final bool firmwareUpdateRequired;
+
   const GlassesState({
     this.connection = GlassesConnectionState.disconnected,
     this.cameraPermission = GlassesPermissionStatus.notDetermined,
     this.errorMessage,
     this.isConfigured = false,
     this.videoSource = VideoSource.glasses,
+    this.firmwareUpdateRequired = false,
   });
 
   bool get isConnected => connection == GlassesConnectionState.connected;
@@ -68,6 +73,7 @@ class GlassesState extends Equatable {
     String? errorMessage,
     bool? isConfigured,
     VideoSource? videoSource,
+    bool? firmwareUpdateRequired,
   }) {
     return GlassesState(
       connection: connection ?? this.connection,
@@ -75,9 +81,10 @@ class GlassesState extends Equatable {
       errorMessage: errorMessage ?? this.errorMessage,
       isConfigured: isConfigured ?? this.isConfigured,
       videoSource: videoSource ?? this.videoSource,
+      firmwareUpdateRequired: firmwareUpdateRequired ?? this.firmwareUpdateRequired,
     );
   }
 
   @override
-  List<Object?> get props => [connection, cameraPermission, errorMessage, isConfigured, videoSource];
+  List<Object?> get props => [connection, cameraPermission, errorMessage, isConfigured, videoSource, firmwareUpdateRequired];
 }

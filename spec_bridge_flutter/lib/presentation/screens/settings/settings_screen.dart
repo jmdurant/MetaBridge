@@ -387,6 +387,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   settingsService.setUseNativeFrameServer(value);
                 },
               ),
+              SwitchListTile(
+                title: const Text('Compressed Video (HEVC)'),
+                subtitle: const Text(
+                    'Request HEVC frames from glasses to skip decode (SDK 0.6.0+). '
+                    'Experimental: WebRTC receive side not wired yet — leave OFF for now.'),
+                secondary: const Icon(Icons.hd_outlined),
+                value: settings.useCompressedVideo,
+                onChanged: (value) {
+                  settingsService.setUseCompressedVideo(value);
+                },
+              ),
               const SizedBox(height: 32),
               const Padding(
                 padding: EdgeInsets.all(16),

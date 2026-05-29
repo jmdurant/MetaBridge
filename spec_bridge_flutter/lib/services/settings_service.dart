@@ -12,6 +12,7 @@ class SettingsService extends ChangeNotifier {
   static const _keyDefaultVideoQuality = 'default_video_quality';
   static const _keyDefaultFrameRate = 'default_frame_rate';
   static const _keyUseNativeFrameServer = 'use_native_frame_server';
+  static const _keyUseCompressedVideo = 'use_compressed_video';
   static const _keyGlassesCameraPermissionGranted = 'glasses_camera_permission_granted';
 
   AppSettings _settings = const AppSettings();
@@ -63,6 +64,7 @@ class SettingsService extends ChangeNotifier {
       defaultVideoQuality: videoQuality,
       defaultFrameRate: frameRate,
       useNativeFrameServer: prefs.getBool(_keyUseNativeFrameServer) ?? true,
+      useCompressedVideo: prefs.getBool(_keyUseCompressedVideo) ?? false,
     );
 
     // Load glasses camera permission (persisted across sessions)
@@ -128,6 +130,13 @@ class SettingsService extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_keyUseNativeFrameServer, use);
     _settings = _settings.copyWith(useNativeFrameServer: use);
+    notifyListeners();
+  }
+
+  Future<void> setUseCompressedVideo(bool use) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyUseCompressedVideo, use);
+    _settings = _settings.copyWith(useCompressedVideo: use);
     notifyListeners();
   }
 

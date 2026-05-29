@@ -136,6 +136,7 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
         videoQuality: settings.defaultVideoQuality,
         frameRate: settings.defaultFrameRate.value,
         useNativeFrameServer: settings.useNativeFrameServer,
+        compressVideo: settings.useCompressedVideo,
       );
       if (mounted) {
         setState(() => _isStarting = false);

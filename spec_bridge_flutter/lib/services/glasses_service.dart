@@ -40,6 +40,11 @@ class GlassesService extends ChangeNotifier {
         case FramePreviewEvent():
           // Frames are handled via previewFrameStream
           break;
+        case DeviceCompatibilityEvent():
+          _updateState(_currentState.copyWith(
+            firmwareUpdateRequired: event.firmwareUpdateRequired,
+          ));
+          break;
       }
     });
   }
@@ -108,6 +113,7 @@ class GlassesService extends ChangeNotifier {
     int height = 720,
     int frameRate = 24,
     String videoQuality = 'medium',
+    bool compressVideo = false,
   }) async {
     final config = StreamConfig(
       width: width,
@@ -115,8 +121,14 @@ class GlassesService extends ChangeNotifier {
       frameRate: frameRate,
       videoSource: _currentState.videoSource,
       videoQuality: videoQuality,
+      compressVideo: compressVideo,
     );
     return await _channel.startStreaming(config);
+  }
+
+  /// Open the Meta AI firmware-update screen for the connected glasses.
+  Future<bool> openFirmwareUpdate() async {
+    return await _channel.openFirmwareUpdate();
   }
 
   /// Stop video streaming

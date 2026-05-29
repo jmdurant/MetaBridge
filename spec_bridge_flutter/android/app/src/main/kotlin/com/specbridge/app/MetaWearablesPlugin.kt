@@ -54,9 +54,13 @@ class MetaWearablesPlugin(
                 val frameRate = call.argument<Int>("frameRate") ?: 24
                 val videoSource = call.argument<String>("videoSource") ?: "glasses"
                 val videoQuality = call.argument<String>("videoQuality") ?: "medium"
-                startStreaming(width, height, frameRate, videoSource, videoQuality, result)
+                // Opt-in compressed HEVC streaming (SDK 0.6.0+). Defaults false so the existing
+                // raw-I420 WebView pipeline is unaffected until the WebRTC receive side is wired.
+                val compressVideo = call.argument<Boolean>("compressVideo") ?: false
+                startStreaming(width, height, frameRate, videoSource, videoQuality, compressVideo, result)
             }
             "stopStreaming" -> stopStreaming(result)
+            "openFirmwareUpdate" -> openFirmwareUpdate(result)
             "disconnect" -> disconnect(result)
             "getStreamStats" -> getStreamStats(result)
             "setVideoSource" -> {
@@ -87,6 +91,17 @@ class MetaWearablesPlugin(
                         sendEvent(mapOf(
                             "type" to "connectionState",
                             "state" to state.name.lowercase()
+                        ))
+                    }
+                }
+
+                // Observe device compatibility / firmware-update requirement (multi-glasses-version
+                // support). Flutter currently ignores unknown event types, so this is additive.
+                launch {
+                    wearablesManager!!.firmwareUpdateRequired.collectLatest { required ->
+                        sendEvent(mapOf(
+                            "type" to "deviceCompatibility",
+                            "firmwareUpdateRequired" to required
                         ))
                     }
                 }
@@ -192,7 +207,7 @@ class MetaWearablesPlugin(
     private var nativeFrameServer: NativeFrameServer? = null
     private var useNativeServer = true
 
-    private fun startStreaming(width: Int, height: Int, frameRate: Int, videoSource: String, videoQuality: String, result: MethodChannel.Result) {
+    private fun startStreaming(width: Int, height: Int, frameRate: Int, videoSource: String, videoQuality: String, compressVideo: Boolean, result: MethodChannel.Result) {
         currentVideoSource = videoSource
 
         scope.launch {
@@ -203,7 +218,7 @@ class MetaWearablesPlugin(
                 ))
 
                 when (videoSource) {
-                    "glasses" -> startGlassesStreaming(width, height, frameRate, videoQuality, result)
+                    "glasses" -> startGlassesStreaming(width, height, frameRate, videoQuality, compressVideo, result)
                     "backCamera" -> startCameraStreaming(width, height, frameRate, false, result)
                     "frontCamera" -> startCameraStreaming(width, height, frameRate, true, result)
                     "screenRecord" -> {
@@ -223,7 +238,7 @@ class MetaWearablesPlugin(
         }
     }
 
-    private suspend fun startGlassesStreaming(width: Int, height: Int, frameRate: Int, videoQuality: String, result: MethodChannel.Result) {
+    private suspend fun startGlassesStreaming(width: Int, height: Int, frameRate: Int, videoQuality: String, compressVideo: Boolean, result: MethodChannel.Result) {
         val manager = wearablesManager
         if (manager == null) {
             result.error("NOT_CONFIGURED", "Call configure first for glasses streaming", null)
@@ -255,7 +270,7 @@ class MetaWearablesPlugin(
             }
         }
 
-        val success = streamManager!!.startStreaming(width, height, frameRate, videoQuality)
+        val success = streamManager!!.startStreaming(width, height, frameRate, videoQuality, compressVideo)
         if (success) {
             sendEvent(mapOf(
                 "type" to "streamStatus",
@@ -452,6 +467,19 @@ class MetaWearablesPlugin(
             android.util.Log.w("MetaWearablesPlugin", "CPU usage error: ${e.message}")
             return -1
         }
+    }
+
+    /**
+     * Open the Meta AI firmware-update screen for the connected glasses.
+     * Surfaced when device compatibility reports DEVICE_UPDATE_REQUIRED (e.g. older Gen 1 glasses).
+     */
+    private fun openFirmwareUpdate(result: MethodChannel.Result) {
+        val manager = wearablesManager
+        if (manager == null) {
+            result.error("NOT_CONFIGURED", "Call configure first", null)
+            return
+        }
+        result.success(manager.openFirmwareUpdate())
     }
 
     private fun disconnect(result: MethodChannel.Result) {

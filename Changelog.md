@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] - 2026-05-29 - Meta Wearables SDK 0.7.0 Upgrade (Android)
+
+### Changed
+- **Meta Wearables DAT SDK 0.3.0 → 0.7.0** (`mwdat-core`, `mwdat-camera`).
+- **New session/stream API:** migrated from the removed `Wearables.startStreamSession(...)` to the
+  `Wearables.createSession() → session.addStream(StreamConfiguration) → stream.start()` lifecycle.
+- `RegistrationState` updated for its sealed-class → enum change; `activeDevice(devices)` → `activeDeviceFlow()`;
+  registration/unregistration now take an Activity.
+
+### Added
+- **Compressed HEVC streaming (experimental, opt-in, default OFF):** `StreamConfiguration.compressVideo`
+  delivers the glasses' native HEVC bitstream (skips on-phone decode), plumbed through native →
+  `StreamConfig` → a "Compressed Video (HEVC)" toggle in Settings. The WebRTC receive side is not yet
+  wired for HEVC, so raw I420 remains the working default. Wiring HEVC end-to-end is the next step and
+  is where the ~2–5s latency win is expected.
+- **Multi-glasses-version support:** monitors `DeviceCompatibility` per device and surfaces a
+  "firmware/app update required" banner with an Update action (`Wearables.openFirmwareUpdate`) — needed
+  for older Ray-Ban Meta (Gen 1) glasses on stale firmware. Uses a permissive device selector so all
+  camera-capable glasses are eligible.
+
+### Removed
+- The phone-side / glasses-side **ABR reflection hacks** in `StreamSessionManager` — they targeted SDK
+  internals that no longer exist in 0.7.0, and 0.4.0 fixed the "stream latency degrading over time" bug
+  they were working around.
+
+### Notes
+- Raw-I420 frame output is byte-for-byte unchanged, so the existing native-server/WebView pipeline is
+  unaffected. iOS parity (`VideoCodec.hvc1`) is still pending.
+
 ## [1.2.0] - 2026-01-13 - Glasses Streaming POC
 
 ### Added

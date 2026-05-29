@@ -43,6 +43,11 @@ class AppSettings extends Equatable {
   final TargetFrameRate defaultFrameRate;
   final bool useNativeFrameServer; // Bypass Flutter UI thread for frames
 
+  /// Request compressed HEVC frames from the glasses (Meta SDK 0.6.0+).
+  /// EXPERIMENTAL: the WebRTC receive side isn't wired for HEVC yet, so leaving
+  /// this off keeps the working raw-I420 pipeline. See Changelog 1.3.0.
+  final bool useCompressedVideo;
+
   const AppSettings({
     this.jitsiMode = JitsiMode.libJitsiMeet,
     this.defaultServer = 'https://meet.ffmuc.net',
@@ -53,6 +58,7 @@ class AppSettings extends Equatable {
     this.defaultVideoQuality = VideoQuality.low, // LOW quality for better BT bandwidth
     this.defaultFrameRate = TargetFrameRate.fps15, // 15fps stable on Bluetooth
     this.useNativeFrameServer = true, // Default enabled for better performance
+    this.useCompressedVideo = false, // Experimental HEVC passthrough, off by default
   });
 
   AppSettings copyWith({
@@ -65,6 +71,7 @@ class AppSettings extends Equatable {
     VideoQuality? defaultVideoQuality,
     TargetFrameRate? defaultFrameRate,
     bool? useNativeFrameServer,
+    bool? useCompressedVideo,
   }) {
     return AppSettings(
       jitsiMode: jitsiMode ?? this.jitsiMode,
@@ -76,6 +83,7 @@ class AppSettings extends Equatable {
       defaultVideoQuality: defaultVideoQuality ?? this.defaultVideoQuality,
       defaultFrameRate: defaultFrameRate ?? this.defaultFrameRate,
       useNativeFrameServer: useNativeFrameServer ?? this.useNativeFrameServer,
+      useCompressedVideo: useCompressedVideo ?? this.useCompressedVideo,
     );
   }
 
@@ -90,5 +98,6 @@ class AppSettings extends Equatable {
         defaultVideoQuality,
         defaultFrameRate,
         useNativeFrameServer,
+        useCompressedVideo,
       ];
 }
