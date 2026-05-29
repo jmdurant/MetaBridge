@@ -23,6 +23,9 @@ dependencies:
 
   # Local Storage
   shared_preferences: ^2.5.4
+  path_provider: ^2.1.5 # app-storage dir for local recordings
+  share_plus: ^10.1.4 # share saved recordings from app storage
+  open_filex: ^4.5.0 # open a recording in the system video player
 
   # Permissions
   permission_handler: ^12.0.1

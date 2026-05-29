@@ -287,6 +287,11 @@ class StreamService extends ChangeNotifier {
     _stopStatsLogging();
 
     try {
+      // Stop any in-progress recording first so its file is flushed/closed cleanly
+      if (_libJitsiService?.isRecording ?? false) {
+        await _libJitsiService!.stopRecording();
+      }
+
       // Cancel frame subscription
       await _libJitsiFrameSubscription?.cancel();
       _libJitsiFrameSubscription = null;

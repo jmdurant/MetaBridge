@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../data/models/meeting_config.dart';
 import 'frame_websocket_server.dart';
@@ -248,6 +250,105 @@ class LibJitsiService extends ChangeNotifier {
         return null;
       },
     );
+    // Local-recording binary chunks (base64) streamed from MediaRecorder
+    controller.addJavaScriptHandler(
+      handlerName: 'recordingChunk',
+      callback: (args) {
+        if (args.isNotEmpty && args[0] is String) {
+          _appendRecordingChunk(args[0] as String);
+        }
+        return null;
+      },
+    );
+  }
+
+  // MARK: - Local recording
+
+  IOSink? _recordingSink;
+  String? _recordingPath;
+  bool _isRecording = false;
+  int _recChunks = 0;
+  int _recBytes = 0;
+  bool get isRecording => _isRecording;
+
+  /// Absolute path of the last/active recording file (null if none).
+  String? get recordingPath => _recordingPath;
+
+  /// Start recording the live session (video + call audio) to app storage.
+  /// The file is opened when the WebView reports 'recordingStarted' (it carries
+  /// the container extension), so just kick off the recorder here.
+  Future<void> startRecording({bool includeAudio = true}) async {
+    if (_controller == null || _isRecording) return;
+    try {
+      await _controller?.evaluateJavascript(source: 'startRecording($includeAudio)');
+    } catch (e) {
+      debugPrint('LibJitsiService: startRecording error: $e');
+    }
+  }
+
+  Future<void> stopRecording() async {
+    if (_controller == null || !_isRecording) return;
+    try {
+      await _controller?.evaluateJavascript(source: 'stopRecording()');
+    } catch (e) {
+      debugPrint('LibJitsiService: stopRecording error: $e');
+    }
+  }
+
+  Future<void> _openRecordingFile(String ext) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final recDir = Directory('${dir.path}/recordings');
+      if (!recDir.existsSync()) recDir.createSync(recursive: true);
+      final ts = DateTime.now().toIso8601String().replaceAll(RegExp(r'[:.]'), '-');
+      _recordingPath = '${recDir.path}/rec_$ts.$ext';
+      _recordingSink = File(_recordingPath!).openWrite();
+      _recChunks = 0;
+      _recBytes = 0;
+      _isRecording = true;
+      debugPrint('LibJitsiService: recording -> $_recordingPath');
+      notifyListeners();
+    } catch (e) {
+      debugPrint('LibJitsiService: failed to open recording file: $e');
+      _isRecording = false;
+      notifyListeners();
+    }
+  }
+
+  void _appendRecordingChunk(String base64Chunk) {
+    final sink = _recordingSink;
+    if (sink == null) return;
+    try {
+      final bytes = base64Decode(base64Chunk);
+      sink.add(bytes);
+      _recChunks++;
+      _recBytes += bytes.length;
+      if (_recChunks <= 3 || _recChunks % 10 == 0) {
+        debugPrint('LibJitsiService: rec chunk #$_recChunks (+${bytes.length}B, total ${_recBytes}B)');
+      }
+    } catch (e) {
+      debugPrint('LibJitsiService: recording chunk error: $e');
+    }
+  }
+
+  Future<void> _closeRecordingFile() async {
+    final sink = _recordingSink;
+    _isRecording = false;
+    notifyListeners();
+    if (sink == null) return;
+    // MediaRecorder delivers its final chunk asynchronously AFTER the stop event,
+    // and each chunk is base64-encoded async before reaching us. Keep the sink open
+    // briefly so the last chunk(s) land, then flush/close.
+    await Future.delayed(const Duration(milliseconds: 800));
+    _recordingSink = null;
+    try {
+      await sink.flush();
+      await sink.close();
+      debugPrint('LibJitsiService: recording saved -> $_recordingPath '
+          '($_recChunks chunks, ${_recBytes}B)');
+    } catch (e) {
+      debugPrint('LibJitsiService: error closing recording: $e');
+    }
   }
 
   Future<void> _handleJitsiEvent(String event, String dataJson) async {
@@ -358,6 +459,19 @@ class LibJitsiService extends ChangeNotifier {
 
       case 'wsDisconnected':
         debugPrint('LibJitsiService: WebSocket disconnected');
+        break;
+
+      case 'recordingStarted':
+        await _openRecordingFile((data['ext'] as String?) ?? 'webm');
+        break;
+
+      case 'recordingStopped':
+        await _closeRecordingFile();
+        break;
+
+      case 'recordingError':
+        debugPrint('LibJitsiService: recording error: ${data['message']}');
+        await _closeRecordingFile();
         break;
     }
   }

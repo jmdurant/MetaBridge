@@ -1006,6 +1006,85 @@ function setLowLatencyMode(enabled) {
   return !!enabled;
 }
 
+// --- Local recording (MediaRecorder over the live video + call-audio tracks) ---
+let mediaRecorder = null;
+let recordingActive = false;
+let recChunkCount = 0;
+
+function pickRecordingMime() {
+  const candidates = [
+    'video/mp4;codecs=h264,aac',
+    'video/mp4',
+    'video/webm;codecs=h264,opus',
+    'video/webm;codecs=vp9,opus',
+    'video/webm;codecs=vp8,opus',
+    'video/webm',
+  ];
+  for (const m of candidates) {
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m;
+  }
+  return '';
+}
+
+function startRecording(includeAudio) {
+  if (recordingActive) return false;
+  try {
+    const vt = localVideoTrack && localVideoTrack.getTrack ? localVideoTrack.getTrack() : null;
+    const at = (includeAudio !== false && localAudioTrack && localAudioTrack.getTrack)
+        ? localAudioTrack.getTrack() : null;
+    const tracks = [vt, at].filter(Boolean);
+    if (!vt) {
+      console.warn('[JitsiBridge] startRecording: no video track to record');
+      notifyFlutter('recordingError', { message: 'No active video track' });
+      return false;
+    }
+    const stream = new MediaStream(tracks);
+    const mime = pickRecordingMime();
+    const ext = mime.indexOf('mp4') >= 0 ? 'mp4' : 'webm';
+    mediaRecorder = new MediaRecorder(stream, mime ? { mimeType: mime } : {});
+    mediaRecorder.ondataavailable = (e) => {
+      const sz = e.data ? e.data.size : 0;
+      recChunkCount++;
+      if (recChunkCount <= 3 || recChunkCount % 10 === 0) {
+        console.log('[JitsiBridge] rec chunk #' + recChunkCount + ' size=' + sz);
+      }
+      if (e.data && e.data.size > 0) {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const b64 = String(reader.result).split(',')[1] || '';
+          if (b64 && window.flutter_inappwebview) {
+            window.flutter_inappwebview.callHandler('recordingChunk', b64);
+          }
+        };
+        reader.readAsDataURL(e.data);
+      }
+    };
+    mediaRecorder.onstop = () => { notifyFlutter('recordingStopped', {}); };
+    mediaRecorder.onerror = (ev) => {
+      notifyFlutter('recordingError', { message: (ev && ev.error && ev.error.name) || 'recorder error' });
+    };
+    // Announce first (so native opens the file with the right extension), then start.
+    recChunkCount = 0;
+    notifyFlutter('recordingStarted', { mimeType: mime, ext: ext, hasAudio: !!at, hasVideo: !!vt });
+    mediaRecorder.start(1000); // emit a chunk every second
+    recordingActive = true;
+    console.log('[JitsiBridge] Recording started (' + mime + ', audio=' + !!at + ')');
+    return true;
+  } catch (e) {
+    console.error('[JitsiBridge] startRecording error:', e.message);
+    notifyFlutter('recordingError', { message: e.message });
+    return false;
+  }
+}
+
+function stopRecording() {
+  if (!recordingActive || !mediaRecorder) return false;
+  try { mediaRecorder.stop(); } catch (e) { console.error('[JitsiBridge] stopRecording:', e.message); }
+  recordingActive = false;
+  mediaRecorder = null;
+  return true;
+}
+
 // Status display
 const statusEl = document.getElementById('status');
 function updateStatus(msg) {
@@ -2392,6 +2471,8 @@ window.stopVideoTrack = stopVideoTrack;
 window.setVideoSource = setVideoSource;
 window.setCompressedMode = setCompressedMode;
 window.setLowLatencyMode = setLowLatencyMode;
+window.startRecording = startRecording;
+window.stopRecording = stopRecording;
 window.getVideoSourceMode = getVideoSourceMode;
 window.diagnosePeerConnection = diagnosePeerConnection;
 

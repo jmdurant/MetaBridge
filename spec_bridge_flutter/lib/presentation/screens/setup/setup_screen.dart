@@ -181,6 +181,11 @@ class _SetupScreenState extends State<SetupScreen> {
         title: const Text('SpecBridge Setup'),
         actions: [
           IconButton(
+            icon: const Icon(Icons.video_library_outlined),
+            tooltip: 'Recordings',
+            onPressed: () => context.goToRecordings(),
+          ),
+          IconButton(
             icon: const Icon(Icons.settings),
             onPressed: () => context.goToSettings(),
           ),

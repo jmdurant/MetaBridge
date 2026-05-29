@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../data/models/meeting_config.dart';
+import '../presentation/screens/recordings/recordings_screen.dart';
 import '../presentation/screens/settings/settings_screen.dart';
 import '../presentation/screens/splash/splash_screen.dart';
 import '../presentation/screens/setup/setup_screen.dart';
@@ -38,6 +39,11 @@ GoRouter createRouter() {
         name: 'settings',
         builder: (context, state) => const SettingsScreen(),
       ),
+      GoRoute(
+        path: '/recordings',
+        name: 'recordings',
+        builder: (context, state) => const RecordingsScreen(),
+      ),
     ],
     errorBuilder: (context, state) => Scaffold(
       body: Center(
@@ -56,4 +62,6 @@ extension GoRouterExtension on BuildContext {
   }
 
   void goToSettings() => GoRouter.of(this).push('/settings');
+
+  void goToRecordings() => GoRouter.of(this).push('/recordings');
 }

@@ -622,6 +622,7 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
     required bool isVideoMuted,
     required VideoSource videoSource,
   }) {
+    final isRecording = context.watch<LibJitsiService>().isRecording;
     return Container(
       padding: const EdgeInsets.all(16),
       color: Colors.black54,
@@ -629,6 +630,7 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
         isAudioMuted: isAudioMuted,
         isVideoMuted: isVideoMuted,
         currentSource: videoSource.name,
+        isRecording: isRecording,
         onToggleAudio: () async {
           final streamService = context.read<StreamService>();
           await streamService.toggleAudio();
@@ -638,7 +640,53 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
           await streamService.toggleVideo();
         },
         onSwitchSource: () => _showSourcePicker(videoSource),
+        onToggleRecord: () async {
+          final lib = context.read<LibJitsiService>();
+          if (lib.isRecording) {
+            await lib.stopRecording();
+          } else {
+            _showRecordPicker();
+          }
+        },
         onEndCall: _stopStreaming,
+      ),
+    );
+  }
+
+  void _showRecordPicker() {
+    final lib = context.read<LibJitsiService>();
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('Record to device',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            ),
+            ListTile(
+              leading: const Icon(Icons.videocam, color: Colors.redAccent),
+              title: const Text('Video + Audio'),
+              subtitle: const Text('Records the glasses video and call audio'),
+              onTap: () {
+                Navigator.pop(context);
+                lib.startRecording(includeAudio: true);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.videocam_outlined, color: Colors.redAccent),
+              title: const Text('Video only'),
+              subtitle: const Text('Records video with no audio track'),
+              onTap: () {
+                Navigator.pop(context);
+                lib.startRecording(includeAudio: false);
+              },
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
       ),
     );
   }

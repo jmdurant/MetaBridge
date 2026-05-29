@@ -5,9 +5,11 @@ class ControlButtons extends StatelessWidget {
   final bool isAudioMuted;
   final bool isVideoMuted;
   final String currentSource;  // 'glasses', 'frontCamera', 'backCamera'
+  final bool isRecording;
   final VoidCallback onToggleAudio;
   final VoidCallback onToggleVideo;
   final VoidCallback onSwitchSource;
+  final VoidCallback onToggleRecord;
   final VoidCallback onEndCall;
 
   const ControlButtons({
@@ -15,9 +17,11 @@ class ControlButtons extends StatelessWidget {
     required this.isAudioMuted,
     required this.isVideoMuted,
     this.currentSource = 'glasses',
+    this.isRecording = false,
     required this.onToggleAudio,
     required this.onToggleVideo,
     required this.onSwitchSource,
+    required this.onToggleRecord,
     required this.onEndCall,
   });
 
@@ -73,6 +77,15 @@ class ControlButtons extends StatelessWidget {
           isActive: true,
           activeColor: Colors.blue,
           onPressed: onSwitchSource,
+        ),
+
+        // Record button (local recording to app storage)
+        _ControlButton(
+          icon: isRecording ? Icons.stop_circle : Icons.fiber_manual_record,
+          label: isRecording ? 'Recording' : 'Record',
+          isActive: isRecording,
+          activeColor: Colors.redAccent,
+          onPressed: onToggleRecord,
         ),
 
         // End call button
