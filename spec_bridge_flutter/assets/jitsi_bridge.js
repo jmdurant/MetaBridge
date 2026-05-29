@@ -100,6 +100,26 @@ let hevcWidth = 640;
 let hevcHeight = 360;
 let hevcDecodedWidth = 0;   // actual decoded frame size (what we feed WebRTC)
 let hevcDecodedHeight = 0;
+let hevcFramesDropped = 0;  // decoded frames dropped by the jitter buffer to bound latency
+
+// Jitter buffer (post-decode). Decoded frames are self-contained, so we can re-pace
+// them onto an even cadence to smooth bursty Bluetooth delivery, and drop the oldest
+// if we back up — keeping latency bounded under heavy motion.
+let decodedQueue = [];
+let pacingTimer = null;
+let pacingPrimed = false;
+let lastReleaseTime = 0;
+const JITTER_TARGET_FRAMES = 2;   // prime depth before release (~2-frame buffer)
+const JITTER_MAX_FRAMES = 10;     // hard cap; absorbs backpressure bursts, drop oldest beyond
+let hevcFrameIntervalMs = 42;     // nominal release cadence (~24fps; updated from decoded pts)
+let lastDecodedPtsUs = 0;
+
+// Pre-decode FIFO for HEVC. Unlike I420, delta frames depend on prior frames, so we must
+// NOT drop them before decode — feed every frame to the decoder in order. All smoothing
+// and dropping happens post-decode (decodedQueue), where frames are independent.
+let hevcBlobQueue = [];
+const HEVC_BLOB_QUEUE_MAX = 60;   // safety bound only (~2.5s); decode normally keeps pace
+let hevcQueueProcessing = false;  // dedicated guard so decode stays strictly in-order
 
 // WebGL state for I420 rendering
 let gl = null;
@@ -338,6 +358,7 @@ function measureGpuTime() {
 // WebSocket for receiving frames from Flutter
 let frameSocket = null;
 let wsConnected = false;
+let everConnected = false;  // true once a socket has actually opened (gates auto-reconnect)
 let wsReconnectTimer = null;
 let usingNativeServer = false;
 
@@ -346,13 +367,30 @@ const NATIVE_WS_PORT = 8766;
 // Flutter server port (goes through EventChannel/UI thread)
 const FLUTTER_WS_PORT = 8765;
 
+// The native server (8766) is started around stream start, so it may not be up the
+// instant the WebView loads. Retry native a few times before settling on the Flutter
+// socket so we reliably get the lower-latency native path instead of losing the race.
+let nativeWsAttempts = 0;
+const MAX_NATIVE_WS_ATTEMPTS = 5; // ~5 tries x (2s timeout + 0.5s gap) before Flutter
+
 function connectWebSocket() {
   if (frameSocket && frameSocket.readyState === WebSocket.OPEN) {
     return; // Already connected
   }
-
-  // Try native server first (port 8766), then fall back to Flutter (port 8765)
+  nativeWsAttempts = 0;
+  // Prefer the native server (8766), then fall back to Flutter (8765)
   tryConnectToServer(NATIVE_WS_PORT, true);
+}
+
+function fallbackFromNative() {
+  nativeWsAttempts++;
+  if (nativeWsAttempts < MAX_NATIVE_WS_ATTEMPTS) {
+    console.log('[JitsiBridge] Native server not ready (attempt ' + nativeWsAttempts + '), retrying native (8766)...');
+    setTimeout(() => tryConnectToServer(NATIVE_WS_PORT, true), 500);
+  } else {
+    console.log('[JitsiBridge] Falling back to Flutter server (8765) after ' + nativeWsAttempts + ' native attempts');
+    tryConnectToServer(FLUTTER_WS_PORT, false);
+  }
 }
 
 function tryConnectToServer(port, tryFallback) {
@@ -370,8 +408,7 @@ function tryConnectToServer(port, tryFallback) {
         console.log(`[JitsiBridge] Connection timeout on port ${port}`);
         frameSocket.close();
         if (tryFallback && port === NATIVE_WS_PORT) {
-          console.log('[JitsiBridge] Falling back to Flutter server...');
-          tryConnectToServer(FLUTTER_WS_PORT, false);
+          fallbackFromNative();
         }
       }
     }, 2000);
@@ -383,6 +420,7 @@ function tryConnectToServer(port, tryFallback) {
       console.log(`[JitsiBridge] WebSocket connected (${serverType} server, port ${port})`);
       updateStatus(`Frame server connected (${serverType})`);
       wsConnected = true;
+      everConnected = true;
       notifyFlutter('wsConnected', { native: usingNativeServer, port: port });
     };
 
@@ -397,8 +435,10 @@ function tryConnectToServer(port, tryFallback) {
       wsConnected = false;
       usingNativeServer = false;
       notifyFlutter('wsDisconnected', {});
-      // Retry connection after delay - start with native server again
-      if (!wsReconnectTimer) {
+      // Only auto-reconnect after a previously-established connection drops. During the
+      // initial connect, the native-retry chain (fallbackFromNative) owns retries — letting
+      // onclose also fire connectWebSocket() here would race it and reset the attempt count.
+      if (everConnected && !wsReconnectTimer) {
         wsReconnectTimer = setTimeout(() => {
           wsReconnectTimer = null;
           connectWebSocket();
@@ -412,15 +452,14 @@ function tryConnectToServer(port, tryFallback) {
       wsConnected = false;
       // If native server failed and we should try fallback
       if (tryFallback && port === NATIVE_WS_PORT) {
-        console.log('[JitsiBridge] Native server unavailable, trying Flutter server...');
-        tryConnectToServer(FLUTTER_WS_PORT, false);
+        fallbackFromNative();
       }
     };
   } catch (e) {
     console.error('[JitsiBridge] WebSocket connection failed:', e);
     wsConnected = false;
     if (tryFallback && port === NATIVE_WS_PORT) {
-      tryConnectToServer(FLUTTER_WS_PORT, false);
+      fallbackFromNative();
     }
   }
 }
@@ -467,8 +506,20 @@ function handleBinaryFrame(blob) {
     console.log('[JitsiBridge] Stats: recv=' + frameCount + ' drawn=' + framesDrawn + ' dropQ=' + framesDroppedJs + ' dropStale=' + framesDroppedStale + ' arrivalMs=' + avgInterval + ' latencyMs=' + lastFrameLatencyMs + '/' + avgLatency + '/' + maxFrameLatencyMs + ' (last/avg/max)');
   }
 
-  // Single-frame buffer pattern: always keep only the latest frame
-  // This ensures we always show the freshest frame, skipping all intermediate ones
+  if (compressedMode) {
+    // HEVC: never drop pre-decode (delta frames depend on prior frames). FIFO every frame;
+    // the post-decode jitter buffer handles pacing/dropping safely.
+    hevcBlobQueue.push(blob);
+    if (hevcBlobQueue.length > HEVC_BLOB_QUEUE_MAX) {
+      hevcBlobQueue.shift();  // pathological backlog only
+      framesDroppedJs++;
+    }
+    processHevcQueue();  // self-guarded; safe to call every frame
+    return;
+  }
+
+  // Single-frame buffer pattern (I420/JPEG): always keep only the latest frame.
+  // Safe to drop intermediate frames here because each is self-contained.
   const hadPendingFrame = latestFrameBlob !== null;
   latestFrameBlob = blob;
 
@@ -481,6 +532,18 @@ function handleBinaryFrame(blob) {
   if (!isProcessingFrame) {
     processLatestFrame();
   }
+}
+
+// Sequentially decode every queued HEVC frame — no pre-decode dropping, strictly in order.
+async function processHevcQueue() {
+  if (hevcQueueProcessing) return;   // non-reentrant: detectAndProcessFrame toggles
+                                     // isProcessingFrame, so we use our own guard
+  hevcQueueProcessing = true;
+  while (hevcBlobQueue.length > 0) {
+    const blob = hevcBlobQueue.shift();
+    await detectAndProcessFrame(blob);
+  }
+  hevcQueueProcessing = false;
 }
 
 // Process the latest frame, then check for newer ones
@@ -763,6 +826,59 @@ async function processI420FrameInternal(blob) {
 
 // --- Step 2: HEVC (WebCodecs) processing ---
 
+// Queue a decoded frame and start the paced release loop. Drops oldest if backed up.
+function enqueueDecodedFrame(frame) {
+  decodedQueue.push(frame);
+  while (decodedQueue.length > JITTER_MAX_FRAMES) {
+    const old = decodedQueue.shift();
+    try { old.close(); } catch (_) {}
+    hevcFramesDropped++;
+  }
+  if (!pacingTimer) startPacing();
+}
+
+// Release frames to the track on an even cadence (smooths jitter); catch up if backed up.
+function startPacing() {
+  pacingPrimed = false;
+  lastReleaseTime = 0;
+  pacingTimer = setInterval(() => {
+    if (decodedQueue.length === 0) return;
+    if (!pacingPrimed) {
+      if (decodedQueue.length < JITTER_TARGET_FRAMES) return; // wait to prime the buffer
+      pacingPrimed = true;
+    }
+    const now = performance.now();
+    // Adaptive cadence: at/below target depth, release at the source rate (smooth). When the
+    // queue is deep (backpressure bursts), gently shorten the interval to drain back toward
+    // target — recovering latency without hard-draining the whole burst back into jitter.
+    // (Overflow past JITTER_MAX_FRAMES still drops oldest in enqueue as a hard latency cap.)
+    let interval = hevcFrameIntervalMs;
+    const over = decodedQueue.length - JITTER_TARGET_FRAMES;
+    if (over > 0) {
+      interval = Math.max(hevcFrameIntervalMs * 0.4, hevcFrameIntervalMs - over * 6);
+    }
+    const due = lastReleaseTime === 0 || (now - lastReleaseTime) >= interval;
+    if (due) {
+      const frame = decodedQueue.shift();
+      lastReleaseTime = now;
+      try {
+        if (hevcTrackWriter) hevcTrackWriter.write(frame); else frame.close();
+      } catch (e) {
+        try { frame.close(); } catch (_) {}
+      }
+    }
+  }, 8);
+}
+
+function stopPacing() {
+  if (pacingTimer) { clearInterval(pacingTimer); pacingTimer = null; }
+  pacingPrimed = false;
+  for (const f of decodedQueue) { try { f.close(); } catch (_) {} }
+  decodedQueue = [];
+  hevcBlobQueue = [];
+  hevcQueueProcessing = false;
+}
+
 // Create the MediaStreamTrackGenerator + writer that the decoder feeds.
 function createHevcTrackStream() {
   if (hevcTrackWriter) { try { hevcTrackWriter.close(); } catch (_) {} hevcTrackWriter = null; }
@@ -781,19 +897,26 @@ function ensureHevcDecoder(codedWidth, codedHeight) {
         // Track the real decoded size (updates live if the source/ABR changes it)
         hevcDecodedWidth = frame.displayWidth || frame.codedWidth || hevcDecodedWidth;
         hevcDecodedHeight = frame.displayHeight || frame.codedHeight || hevcDecodedHeight;
-        if (hevcTrackWriter) {
-          hevcTrackWriter.write(frame);  // consumes/closes the VideoFrame
-        } else {
-          frame.close();
+        // Estimate the source cadence from decoded timestamps to pace the jitter buffer
+        if (lastDecodedPtsUs > 0 && frame.timestamp > lastDecodedPtsUs) {
+          const dtMs = (frame.timestamp - lastDecodedPtsUs) / 1000;
+          if (dtMs > 5 && dtMs < 250) {
+            hevcFrameIntervalMs = hevcFrameIntervalMs * 0.9 + dtMs * 0.1; // smooth
+          }
         }
+        lastDecodedPtsUs = frame.timestamp;
+        // Route through the jitter buffer instead of writing immediately
+        enqueueDecodedFrame(frame);
         hevcFramesDecoded++;
         framesDrawn++;  // reuse existing fps stat
         if (hevcFramesDecoded <= 3 || hevcFramesDecoded % 100 === 0) {
-          console.log('[JitsiBridge] HEVC decoded frame #' + hevcFramesDecoded);
+          console.log('[JitsiBridge] HEVC decoded #' + hevcFramesDecoded +
+            ' q=' + decodedQueue.length + ' drop=' + hevcFramesDropped +
+            ' intervalMs=' + hevcFrameIntervalMs.toFixed(0));
         }
       } catch (e) {
         try { frame.close(); } catch (_) {}
-        console.error('[JitsiBridge] HEVC output write error:', e.message);
+        console.error('[JitsiBridge] HEVC output error:', e.message);
       }
     },
     error: (e) => {
@@ -2125,6 +2248,7 @@ async function stopVideoTrack() {
       canvasStream = null;
     }
     // Tear down the HEVC decode pipeline if it was used
+    stopPacing();
     if (videoDecoder) {
       try { videoDecoder.close(); } catch (_) {}
       videoDecoder = null;

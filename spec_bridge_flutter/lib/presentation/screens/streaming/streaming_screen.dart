@@ -53,8 +53,17 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
     final streamService = context.read<StreamService>();
     final libJitsiService = context.read<LibJitsiService>();
     final nativeChannel = context.read<MetaDATChannel>();
+    final glassesService = context.read<GlassesService>();
+    final settings = context.read<SettingsService>().settings;
     streamService.setLibJitsiService(libJitsiService);
     streamService.setNativeChannel(nativeChannel);
+
+    // Start the native frame server BEFORE mounting the WebView, so port 8766 is
+    // already listening when the WebView connects — otherwise it loses the startup
+    // race and falls back to the slower Flutter EventChannel socket (8765).
+    if (settings.useNativeFrameServer) {
+      glassesService.setNativeServerEnabled(true);
+    }
 
     setState(() {}); // Trigger rebuild to show WebView
 
