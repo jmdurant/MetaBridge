@@ -77,7 +77,9 @@ flutter build apk --debug
 flutter build ios --simulator --debug --no-codesign
 ```
 
-The automated suite has 11 Flutter tests and 6 JavaScript tests. Tests use a recording WebView, real local Dart WebSockets and mocked Jitsi/browser APIs; they do not substitute for device media tests. Flutter analysis, Android debug and iOS simulator compilation have passed.
+The automated suite includes Flutter and JavaScript regression tests and native JVM tests for frame-delivery timing. Tests use a recording WebView, real local Dart WebSockets, a controllable monotonic clock and mocked Jitsi/browser APIs; they do not substitute for device media tests. Flutter analysis, Android debug and iOS simulator compilation passed during the SDK upgrade.
+
+Android diagnostics now retain a bounded session report through failed starts and teardown, with SDK delivery, sampled device state, actual communication-device selection and downstream pipeline counters. See [Android session diagnostics](README.md#android-session-diagnostics) for collection boundaries and how to copy the report. The phone-local delay measurement begins at native SDK receipt; it does not measure the glasses-to-phone link or remote playback.
 
 The browser smoke test at `test/browser/jitsi_bridge_smoke.html` additionally passed six checks in desktop Chrome using the actual bundled Jitsi library: initialization, WebGL availability, synthetic I420 and JPEG pixel rendering, canvas video-track creation, and capture cleanup on disposal. It makes no camera/microphone request and does not join a meeting. No release upload, signing change for distribution or physical-glasses test was performed.
 

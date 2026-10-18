@@ -25,6 +25,8 @@ class MetaWearablesPlugin(
 
     private var wearablesManager: MetaWearablesManager? = null
     private var streamManager: StreamSessionManager? = null
+    private var lastCaptureStats: Map<String, Any?> = emptyMap()
+    private var captureSequence = 0L
     private var streamStatusJob: Job? = null
     private var cameraFrameJob: Job? = null
 
@@ -240,6 +242,8 @@ class MetaWearablesPlugin(
             result.error("ALREADY_STREAMING", "Stop the current stream before starting again", null)
             return
         }
+        lastCaptureStats = emptyMap()
+        captureSequence++
         val capture = StreamSessionManager(activity, manager)
         streamManager = capture
         capture.onError = { message ->
@@ -321,6 +325,7 @@ class MetaWearablesPlugin(
             cameraFrameJob = null
             // Stop glasses streaming
             streamManager?.stopAndWait()
+            streamManager?.let { lastCaptureStats = it.getStats() }
             streamManager?.dispose()
             streamManager = null
 
@@ -347,15 +352,17 @@ class MetaWearablesPlugin(
     }
 
     private fun getStreamStats(result: MethodChannel.Result) {
-        val stats = mutableMapOf<String, Any>()
+        val stats = mutableMapOf<String, Any?>()
 
         // Add video source type
         stats["videoSource"] = currentVideoSource
 
         // Get stream manager stats (glasses)
-        streamManager?.let {
-            stats.putAll(it.getStats())
+        if (currentVideoSource == "glasses") {
+            stats.putAll(streamManager?.getStats() ?: lastCaptureStats)
+            stats["captureSequence"] = captureSequence
         }
+        stats.putAll(AndroidDiagnostics.snapshot(activity))
 
         // Get camera manager stats
         cameraManager?.let {

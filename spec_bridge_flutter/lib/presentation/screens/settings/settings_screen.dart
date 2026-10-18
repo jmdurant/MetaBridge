@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../../data/models/app_settings.dart';
 import '../../../services/permission_service.dart';
 import '../../../services/settings_service.dart';
+import '../streaming/widgets/diagnostics_report.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -369,6 +370,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
               const SizedBox(height: 16),
               const Divider(),
               const _SectionHeader('Developer Options'),
+              ListTile(
+                leading: const Icon(Icons.description_outlined),
+                title: const Text('Latest session report'),
+                subtitle: const Text('View or copy saved streaming diagnostics'),
+                onTap: () => showDiagnosticsReport(context),
+              ),
               SwitchListTile(
                 title: const Text('Show Pipeline Stats'),
                 subtitle: const Text('Display frame rates, CPU usage, and encoding stats during streaming'),

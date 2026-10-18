@@ -28,6 +28,7 @@ class _StatsOverlayState extends State<StatsOverlay> {
   Map<String, dynamic> _nativeStats = {};
   Map<String, dynamic> _flutterStats = {};
   Timer? _refreshTimer;
+  bool _refreshing = false;
 
   @override
   void initState() {
@@ -60,32 +61,42 @@ class _StatsOverlayState extends State<StatsOverlay> {
   }
 
   Future<void> _refreshStats() async {
-    if (!mounted) return;
+    if (!mounted || _refreshing) return;
+    _refreshing = true;
+    try {
+      // Get WebView stats
+      final webViewStats = await widget.service.getStats().timeout(
+        const Duration(seconds: 2),
+      );
 
-    // Get WebView stats
-    final webViewStats = await widget.service.getStats();
+      // Get Flutter-side stats
+      final flutterStats = widget.service.getFlutterStats();
 
-    // Get Flutter-side stats
-    final flutterStats = widget.service.getFlutterStats();
+      // Get native stats (if available)
+      Map<String, dynamic> nativeStats = {};
+      if (widget.nativeChannel != null) {
+        nativeStats = await widget.nativeChannel!.getStreamStats().timeout(
+          const Duration(seconds: 1),
+        );
 
-    // Get native stats (if available)
-    Map<String, dynamic> nativeStats = {};
-    if (widget.nativeChannel != null) {
-      nativeStats = await widget.nativeChannel!.getStreamStats();
-
-      // Add Flutter EventChannel reception stats
-      if (widget.nativeChannel is MetaDATChannelImpl) {
-        final impl = widget.nativeChannel as MetaDATChannelImpl;
-        nativeStats.addAll(impl.frameReceptionStats);
+        // Add Flutter EventChannel reception stats
+        if (widget.nativeChannel is MetaDATChannelImpl) {
+          final impl = widget.nativeChannel as MetaDATChannelImpl;
+          nativeStats.addAll(impl.frameReceptionStats);
+        }
       }
-    }
 
-    if (mounted) {
-      setState(() {
-        _webViewStats = webViewStats;
-        _flutterStats = flutterStats;
-        _nativeStats = nativeStats;
-      });
+      if (mounted) {
+        setState(() {
+          _webViewStats = webViewStats;
+          _flutterStats = flutterStats;
+          _nativeStats = nativeStats;
+        });
+      }
+    } catch (_) {
+      /* Keep the last snapshot; the report marks unavailable samples. */
+    } finally {
+      _refreshing = false;
     }
   }
 
@@ -117,12 +128,16 @@ class _StatsOverlayState extends State<StatsOverlay> {
       videoSource = 'camera (WebView)';
     }
 
-    final isGlassesMode = !isDirectCamera && (nativeVideoSource == 'glasses' || webViewMode == 'canvas');
-    final isCameraMode = nativeVideoSource == 'frontCamera' || nativeVideoSource == 'backCamera';
+    final isGlassesMode =
+        !isDirectCamera &&
+        (nativeVideoSource == 'glasses' || webViewMode == 'canvas');
+    final isCameraMode =
+        nativeVideoSource == 'frontCamera' || nativeVideoSource == 'backCamera';
 
     // Native server stats
     final useNativeServer = _nativeStats['useNativeServer'] ?? false;
-    final nativeServerHasClient = _nativeStats['nativeServerHasClient'] ?? false;
+    final nativeServerHasClient =
+        _nativeStats['nativeServerHasClient'] ?? false;
     final nativeFramesSent = _nativeStats['nativeFramesSent'] ?? 0;
     final nativeFramesDropped = _nativeStats['nativeFramesDropped'] ?? 0;
     final nativeBackpressure = _nativeStats['nativeBackpressure'] ?? 0;
@@ -163,134 +178,289 @@ class _StatsOverlayState extends State<StatsOverlay> {
     return Positioned(
       top: 60,
       right: 8,
-      child: Container(
-        padding: const EdgeInsets.all(8),
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.85),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Pipeline header with source indicator
-            _buildSectionHeader('PIPELINE STATS'),
-            _buildStatRow('Source', _formatVideoSource(videoSource, isDirectCamera)),
-            const SizedBox(height: 4),
-
-            // Direct camera mode - minimal stats (no processing pipeline)
-            if (isDirectCamera) ...[
-              _buildSectionLabel('Direct WebRTC'),
-              _buildStatRow(
-                'Path',
-                'getUserMedia → WebRTC',
-                valueColor: Colors.greenAccent,
+      bottom: 8,
+      left: 8,
+      child: Align(
+        alignment: Alignment.topRight,
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: SingleChildScrollView(
+            child: Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.85),
+                borderRadius: BorderRadius.circular(8),
               ),
-              _buildStatRow('Camera', hasCameraStream ? 'Active' : 'Inactive',
-                  valueColor: hasCameraStream ? Colors.greenAccent : Colors.redAccent),
-              _buildStatRow('Resolution', _webViewStats.resolution),
-              _buildStatRow('Has Track', _webViewStats.hasVideoTrack ? 'Yes' : 'No',
-                  valueColor: _webViewStats.hasVideoTrack ? Colors.greenAccent : Colors.orangeAccent),
-              const SizedBox(height: 6),
-            ] else ...[
-              // Capture stats - different for glasses vs camera (legacy JPEG path)
-              if (isGlassesMode) ...[
-                _buildSectionLabel('Capture (I420)'),
-                _buildStatRow('SDK Interval', '${_nativeStats['avgFrameIntervalMs'] ?? 0}ms',
-                    valueColor: ((_nativeStats['avgFrameIntervalMs'] ?? 0) as num) > 50 ? Colors.orangeAccent : Colors.greenAccent),
-                _buildStatRow('Recv/Proc/Skip', '$nativeReceived/$nativeProcessed/$nativeSkipped'),
-                _buildStatRow('Skip Rate', '$nativeSkipRate%'),
-                _buildStatRow('Process Time', '${encodeTimeMs}ms (avg ${avgEncodeMs}ms)'),
-                const SizedBox(height: 6),
-              ] else if (isCameraMode) ...[
-                _buildSectionLabel('Capture (JPEG) - Legacy'),
-                _buildStatRow('Frames', '$cameraFrameCount'),
-                const SizedBox(height: 6),
-              ],
-
-              // Transport layer - show which path is active
-              _buildSectionLabel('Transport'),
-              _buildStatRow(
-                'Path',
-                usingNativePath ? 'Native WS (8766)' : 'Flutter WS (8765)',
-                valueColor: usingNativePath ? Colors.greenAccent : Colors.orangeAccent,
-              ),
-              if (usingNativePath) ...[
-                _buildStatRow('Sent/Drop', '$nativeFramesSent/$nativeFramesDropped'),
-                _buildStatRow('Backpressure', '$nativeBackpressure',
-                    valueColor: nativeBackpressure > 0 ? Colors.orangeAccent : Colors.greenAccent),
-              ] else ...[
-                _buildStatRow('EventCh Recv', '$flutterReceived @ ${eventChannelFps}fps'),
-                if (isGlassesMode) _buildStatRow('EventCh Loss', '$eventChannelLoss%'),
-                _buildStatRow('WS Sent/Drop', '$flutterSent/$flutterDropped'),
-                _buildStatRow('Slow Sends', '$flutterSlowSends',
-                    valueColor: flutterSlowSends > 0 ? Colors.orangeAccent : Colors.greenAccent),
-              ],
-              const SizedBox(height: 6),
-
-              // WebView frame processing stats (only for canvas mode)
-              _buildSectionLabel('WebView'),
-              _buildStatRow('WS', _webViewStats.wsConnected ? 'Connected' : 'Disconnected',
-                  valueColor: _webViewStats.wsConnected ? Colors.greenAccent : Colors.redAccent),
-              _buildStatRow('Recv/Drawn', '${_webViewStats.totalFrames}/${_webViewStats.framesDrawn}'),
-              _buildStatRow('Drop (queue/stale)', '${_webViewStats.framesDroppedJs}/${_webViewStats.framesDroppedStale}'),
-              _buildStatRow('Decode', '${_webViewStats.lastDecodeMs}ms (avg ${_webViewStats.avgDecodeMs}ms)'),
-              _buildStatRow('Arrival Interval', '${_webViewStats.avgArrivalMs}ms'),
-              _buildStatRow('E2E Latency', '${_webViewStats.lastLatencyMs}ms (avg ${_webViewStats.avgLatencyMs}ms, max ${_webViewStats.maxLatencyMs}ms)'),
-              _buildStatRow('FPS Out', '${_webViewStats.fps}'),
-              _buildStatRow('Resolution', _webViewStats.resolution),
-              const SizedBox(height: 6),
-
-              // WebRTC Encoder stats (shows where backup may occur)
-              _buildSectionLabel('WebRTC Encoder'),
-              _buildStatRow('Encoder', _truncateEncoder(_webViewStats.rtcEncoderImpl)),
-              _buildStatRow('Enc/Sent', '${_webViewStats.rtcFramesEncoded}/${_webViewStats.rtcFramesSent}'),
-              _buildStatRow('Pending', '${_webViewStats.rtcFramesPending}',
-                  valueColor: _webViewStats.rtcFramesPending > 5 ? Colors.orangeAccent : Colors.greenAccent),
-              _buildStatRow('Quality Limit', _webViewStats.rtcQualityLimitation,
-                  valueColor: _webViewStats.rtcQualityLimitation == 'none' ? Colors.greenAccent : Colors.orangeAccent),
-              _buildStatRow('Enc Resolution', '${_webViewStats.rtcEncodeWidth}x${_webViewStats.rtcEncodeHeight}'),
-              _buildStatRow('Enc FPS', '${_webViewStats.rtcEncodeFps}'),
-              _buildStatRow('Retransmits', '${_webViewStats.rtcRetransmits}',
-                  valueColor: _webViewStats.rtcRetransmits > 0 ? Colors.orangeAccent : Colors.greenAccent),
-              const SizedBox(height: 6),
-            ],
-
-            // System
-            _buildSectionLabel('System'),
-            _buildStatRow('CPU', cpuUsage >= 0 ? '$cpuUsage%' : 'N/A'),
-            _buildStatRow('Memory', '$memUsed / $memMax MB'),
-
-            // Connection status
-            if (_webViewStats.isJoined) ...[
-              const SizedBox(height: 6),
-              Row(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(
-                    _webViewStats.hasAudioTrack ? Icons.mic : Icons.mic_off,
-                    size: 12,
-                    color: _webViewStats.hasAudioTrack ? Colors.green : Colors.red,
+                  // Pipeline header with source indicator
+                  _buildSectionHeader('PIPELINE STATS'),
+                  _buildStatRow(
+                    'Source',
+                    _formatVideoSource(videoSource, isDirectCamera),
                   ),
-                  const SizedBox(width: 4),
-                  Icon(
-                    _webViewStats.hasVideoTrack ? Icons.videocam : Icons.videocam_off,
-                    size: 12,
-                    color: _webViewStats.hasVideoTrack ? Colors.green : Colors.red,
-                  ),
-                  if (_webViewStats.isE2EEEnabled) ...[
-                    const SizedBox(width: 4),
-                    const Icon(Icons.lock, size: 12, color: Colors.green),
+                  const SizedBox(height: 4),
+
+                  // Direct camera mode - minimal stats (no processing pipeline)
+                  if (isDirectCamera) ...[
+                    _buildSectionLabel('Direct WebRTC'),
+                    _buildStatRow(
+                      'Path',
+                      'getUserMedia → WebRTC',
+                      valueColor: Colors.greenAccent,
+                    ),
+                    _buildStatRow(
+                      'Camera',
+                      hasCameraStream ? 'Active' : 'Inactive',
+                      valueColor: hasCameraStream
+                          ? Colors.greenAccent
+                          : Colors.redAccent,
+                    ),
+                    _buildStatRow('Resolution', _webViewStats.resolution),
+                    _buildStatRow(
+                      'Has Track',
+                      _webViewStats.hasVideoTrack ? 'Yes' : 'No',
+                      valueColor: _webViewStats.hasVideoTrack
+                          ? Colors.greenAccent
+                          : Colors.orangeAccent,
+                    ),
+                    const SizedBox(height: 6),
+                  ] else ...[
+                    // Capture stats - different for glasses vs camera (legacy JPEG path)
+                    if (isGlassesMode) ...[
+                      _buildSectionLabel('SDK delivery'),
+                      _buildStatRow(
+                        'Actual resolution',
+                        _nativeStats['sdkFrameWidth'] == null
+                            ? 'Unknown'
+                            : '${_nativeStats['sdkFrameWidth']}x${_nativeStats['sdkFrameHeight']}',
+                      ),
+                      _buildStatRow(
+                        'SDK FPS (5s)',
+                        (_nativeStats['sdkFps'] as num?)?.toStringAsFixed(1) ??
+                            'N/A',
+                      ),
+                      _buildStatRow(
+                        'Gap now / longest',
+                        '${_nativeStats['sdkCurrentGapMs'] ?? 'N/A'} / ${_nativeStats['sdkLongestGapMs'] ?? 'N/A'} ms',
+                      ),
+                      _buildStatRow(
+                        'Stalls ≥1s',
+                        '${_nativeStats['sdkStallCount'] ?? 'N/A'}',
+                      ),
+                      _buildStatRow(
+                        'SDK Interval',
+                        '${_nativeStats['avgFrameIntervalMs'] ?? 0}ms',
+                        valueColor:
+                            ((_nativeStats['avgFrameIntervalMs'] ?? 0) as num) >
+                                50
+                            ? Colors.orangeAccent
+                            : Colors.greenAccent,
+                      ),
+                      _buildStatRow(
+                        'Recv/Proc/Skip',
+                        '$nativeReceived/$nativeProcessed/$nativeSkipped',
+                      ),
+                      _buildStatRow('Skip Rate', '$nativeSkipRate%'),
+                      _buildStatRow(
+                        'Process Time',
+                        '${encodeTimeMs}ms (avg ${avgEncodeMs}ms)',
+                      ),
+                      const SizedBox(height: 6),
+                    ] else if (isCameraMode) ...[
+                      _buildSectionLabel('Capture (JPEG) - Legacy'),
+                      _buildStatRow('Frames', '$cameraFrameCount'),
+                      const SizedBox(height: 6),
+                    ],
+
+                    // Transport layer - show which path is active
+                    _buildSectionLabel('Transport'),
+                    _buildStatRow(
+                      'Path',
+                      usingNativePath
+                          ? 'Native WS (8766)'
+                          : 'Flutter WS (8765)',
+                      valueColor: usingNativePath
+                          ? Colors.greenAccent
+                          : Colors.orangeAccent,
+                    ),
+                    if (usingNativePath) ...[
+                      _buildStatRow(
+                        'Sent/Drop',
+                        '$nativeFramesSent/$nativeFramesDropped',
+                      ),
+                      _buildStatRow(
+                        'Backpressure',
+                        '$nativeBackpressure',
+                        valueColor: nativeBackpressure > 0
+                            ? Colors.orangeAccent
+                            : Colors.greenAccent,
+                      ),
+                    ] else ...[
+                      _buildStatRow(
+                        'EventCh Recv',
+                        '$flutterReceived @ ${eventChannelFps}fps',
+                      ),
+                      if (isGlassesMode)
+                        _buildStatRow('EventCh Loss', '$eventChannelLoss%'),
+                      _buildStatRow(
+                        'WS Sent/Drop',
+                        '$flutterSent/$flutterDropped',
+                      ),
+                      _buildStatRow(
+                        'Slow Sends',
+                        '$flutterSlowSends',
+                        valueColor: flutterSlowSends > 0
+                            ? Colors.orangeAccent
+                            : Colors.greenAccent,
+                      ),
+                    ],
+                    const SizedBox(height: 6),
+
+                    // WebView frame processing stats (only for canvas mode)
+                    _buildSectionLabel('WebView'),
+                    _buildStatRow(
+                      'WS',
+                      _webViewStats.wsConnected ? 'Connected' : 'Disconnected',
+                      valueColor: _webViewStats.wsConnected
+                          ? Colors.greenAccent
+                          : Colors.redAccent,
+                    ),
+                    _buildStatRow(
+                      'Recv/Drawn',
+                      '${_webViewStats.totalFrames}/${_webViewStats.framesDrawn}',
+                    ),
+                    _buildStatRow(
+                      'Drop (queue/stale)',
+                      '${_webViewStats.framesDroppedJs}/${_webViewStats.framesDroppedStale}',
+                    ),
+                    _buildStatRow(
+                      'Decode',
+                      '${_webViewStats.lastDecodeMs}ms (avg ${_webViewStats.avgDecodeMs}ms)',
+                    ),
+                    _buildStatRow(
+                      'Arrival Interval',
+                      '${_webViewStats.avgArrivalMs}ms',
+                    ),
+                    _buildStatRow(
+                      'Phone-local delay',
+                      _nativeStats['platform'] == 'android' &&
+                              isGlassesMode &&
+                              _webViewStats.framesDrawn > 0
+                          ? '${_webViewStats.lastLatencyMs}ms (avg ${_webViewStats.avgLatencyMs}ms)'
+                          : 'N/A',
+                    ),
+                    _buildStatRow('FPS Out', '${_webViewStats.fps}'),
+                    _buildStatRow('Resolution', _webViewStats.resolution),
+                    const SizedBox(height: 6),
+
+                    // WebRTC Encoder stats (shows where backup may occur)
+                    _buildSectionLabel('WebRTC Encoder'),
+                    _buildStatRow(
+                      'Encoder',
+                      _truncateEncoder(_webViewStats.rtcEncoderImpl),
+                    ),
+                    _buildStatRow(
+                      'Enc/Sent',
+                      '${_webViewStats.rtcFramesEncoded}/${_webViewStats.rtcFramesSent}',
+                    ),
+                    _buildStatRow(
+                      'Pending',
+                      '${_webViewStats.rtcFramesPending}',
+                      valueColor: _webViewStats.rtcFramesPending > 5
+                          ? Colors.orangeAccent
+                          : Colors.greenAccent,
+                    ),
+                    _buildStatRow(
+                      'Quality Limit',
+                      _webViewStats.rtcQualityLimitation,
+                      valueColor: _webViewStats.rtcQualityLimitation == 'none'
+                          ? Colors.greenAccent
+                          : Colors.orangeAccent,
+                    ),
+                    _buildStatRow(
+                      'Enc Resolution',
+                      '${_webViewStats.rtcEncodeWidth}x${_webViewStats.rtcEncodeHeight}',
+                    ),
+                    _buildStatRow('Enc FPS', '${_webViewStats.rtcEncodeFps}'),
+                    _buildStatRow(
+                      'Retransmits',
+                      '${_webViewStats.rtcRetransmits}',
+                      valueColor: _webViewStats.rtcRetransmits > 0
+                          ? Colors.orangeAccent
+                          : Colors.greenAccent,
+                    ),
+                    const SizedBox(height: 6),
                   ],
-                  const SizedBox(width: 8),
-                  const Text(
-                    'Connected',
-                    style: TextStyle(color: Colors.green, fontSize: 10),
+
+                  // System
+                  _buildSectionLabel('Device / audio'),
+                  _buildStatRow(
+                    'Firmware',
+                    '${_nativeStats['glassesFirmware'] ?? 'Unknown'}',
                   ),
+                  _buildStatRow(
+                    'Glasses heat',
+                    '${_nativeStats['glassesThermalState'] ?? 'Unknown'}',
+                  ),
+                  _buildStatRow(
+                    'Glasses battery',
+                    _nativeStats['glassesBatteryPercent'] == null
+                        ? 'Unknown'
+                        : '${_nativeStats['glassesBatteryPercent']}%',
+                  ),
+                  _buildStatRow(
+                    'Comm. route',
+                    '${_nativeStats['communicationDeviceType'] ?? 'Unknown'}',
+                  ),
+                  const SizedBox(height: 6),
+                  _buildSectionLabel('System'),
+                  _buildStatRow('CPU', cpuUsage >= 0 ? '$cpuUsage%' : 'N/A'),
+                  _buildStatRow('Memory', '$memUsed / $memMax MB'),
+
+                  // Connection status
+                  if (_webViewStats.isJoined) ...[
+                    const SizedBox(height: 6),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          _webViewStats.hasAudioTrack
+                              ? Icons.mic
+                              : Icons.mic_off,
+                          size: 12,
+                          color: _webViewStats.hasAudioTrack
+                              ? Colors.green
+                              : Colors.red,
+                        ),
+                        const SizedBox(width: 4),
+                        Icon(
+                          _webViewStats.hasVideoTrack
+                              ? Icons.videocam
+                              : Icons.videocam_off,
+                          size: 12,
+                          color: _webViewStats.hasVideoTrack
+                              ? Colors.green
+                              : Colors.red,
+                        ),
+                        if (_webViewStats.isE2EEEnabled) ...[
+                          const SizedBox(width: 4),
+                          const Icon(Icons.lock, size: 12, color: Colors.green),
+                        ],
+                        const SizedBox(width: 8),
+                        const Text(
+                          'Connected',
+                          style: TextStyle(color: Colors.green, fontSize: 10),
+                        ),
+                      ],
+                    ),
+                  ],
                 ],
               ),
-            ],
-          ],
+            ),
+          ),
         ),
       ),
     );

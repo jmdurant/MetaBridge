@@ -4,6 +4,8 @@ plugins {
     id 'dev.flutter.flutter-gradle-plugin'
 }
 
+def metaDatVersion = "1.0.1"
+
 android {
     namespace = "com.specbridge.app"
     compileSdk = 37
@@ -18,7 +20,10 @@ android {
         jvmTarget = "21"
     }
 
+    buildFeatures { buildConfig = true }
+
     defaultConfig {
+        buildConfigField "String", "META_DAT_VERSION", "\"${metaDatVersion}\""
         applicationId = "com.specbridge.app"
         minSdk = 31
         targetSdk = 36
@@ -65,9 +70,10 @@ configurations.all {
 }
 
 dependencies {
+    testImplementation "junit:junit:4.13.2"
     // Meta Wearables SDK
-    implementation 'com.meta.wearable:mwdat-core:1.0.1'
-    implementation 'com.meta.wearable:mwdat-camera:1.0.1'
+    implementation "com.meta.wearable:mwdat-core:${metaDatVersion}"
+    implementation "com.meta.wearable:mwdat-camera:${metaDatVersion}"
 
     // Coroutines for Kotlin Flow
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'

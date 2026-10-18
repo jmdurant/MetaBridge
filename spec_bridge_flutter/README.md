@@ -70,6 +70,22 @@ Commit `pubspec.lock`, `ios/Podfile.lock` and the Swift package resolution. Jits
 
 The October 2026 review and upgrade are documented in [ARCHITECTURE.md](ARCHITECTURE.md), including remaining issues, performance priorities and physical-device checks. Build success and mocked bridge tests do not establish glasses connectivity, audio routing, end-to-end encryption interoperability or sustained background streaming.
 
+## Android session diagnostics
+
+Starting a stream records a diagnostic session, including failed starts. Open the document icon on the streaming screen, or **Settings → Developer Options → Latest session report**, then choose **Copy report**. The latest report is saved locally and remains available after stopping or reopening the app. Starting another stream replaces it, so copy any report you want to retain first.
+
+The report samples about every five seconds and retains the first sample, the latest 180 samples (roughly 15 minutes), and the latest 100 application events. It also includes up to 32 recent typed SDK events per capture. Discard counts identify trimmed application history. A report that was not finalized may reflect an interrupted app session; background sampling is subject to Android scheduling.
+
+- **SDK delivery:** requested quality/FPS, actual incoming dimensions, rolling FPS, resolution changes, current/longest delivery gap, and gaps of at least one second. Gaps use a monotonic clock, include an ongoing stall, and exclude SDK-reported pauses. FPS is unknown until one second of active streaming. These are delivery measurements on the phone, not Bluetooth packet counters.
+- **Device:** phone/app/SDK versions and available glasses firmware, battery, thermal, link, worn and hinge state. Missing SDK metadata stays unknown. Device state is sampled rather than continuously recorded.
+- **Audio:** route requests and their return values, plus the communication device Android reports. A mismatch with a requested phone route is recorded. This observation does not prove which microphone WebRTC is capturing and does not change audio routing.
+- **Pipeline:** native socket, Flutter forwarding, WebView rendering and Jitsi encoder counters. Capture restarts have a new `captureSequence`; compare counters within the same capture. The latest native capture snapshot survives stop for the final report.
+- **Phone-local delay:** Android SDK frame receipt to WebView processing. This excludes camera exposure, the glasses-to-phone Bluetooth link, the internet and remote playback. It is unavailable for JPEG/iOS or phone-camera paths.
+
+Reports contain selected diagnostic metadata, with no media, meeting names, server URLs, JWTs, encryption keys or device identifiers. Reports are copied only when you tap the button. Saving failures are shown in the viewer so you can copy the in-memory report.
+
+Run the hardware-independent timing tests with JDK 21: from `android`, run `./gradlew :app:testDebugUnitTest`. Flutter tests cover persistence, failed starts, teardown, bounded history, metadata filtering and report UI. A real-glasses call is still needed to validate actual SDK metadata, microphone routing and stream behavior.
+
 ## License
 
 Application code: MIT, see the repository's `LICENSE`. Bundled Jitsi code retains its upstream licenses under `assets/vendor/jitsi/`.

@@ -16,6 +16,7 @@ import '../../../services/platform_channels/meta_dat_channel.dart';
 import '../../../services/settings_service.dart';
 import '../../../services/stream_service.dart';
 import 'widgets/control_buttons.dart';
+import 'widgets/diagnostics_report.dart';
 import 'widgets/lib_jitsi_webview.dart';
 import 'widgets/stats_overlay.dart';
 
@@ -82,6 +83,7 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
+    context.read<StreamService>().recordLifecycle(state.name);
     debugPrint('StreamingScreen: Lifecycle state changed to $state');
 
     final libJitsiService = context.read<LibJitsiService>();
@@ -403,6 +405,12 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
                 ),
               ],
             ),
+          ),
+
+          IconButton(
+            icon: const Icon(Icons.description_outlined, color: Colors.white),
+            tooltip: 'Session diagnostics',
+            onPressed: () => showDiagnosticsReport(context),
           ),
 
           // Background mode toggle (Android only - iOS doesn't support background camera)

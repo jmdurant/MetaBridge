@@ -9,6 +9,7 @@ import 'frame_websocket_server.dart';
 
 /// Stats from the lib-jitsi-meet WebView
 class LibJitsiStats {
+  final bool available;
   final String resolution;
   final int width;
   final int height;
@@ -22,9 +23,10 @@ class LibJitsiStats {
   final int lastDecodeMs;
   final int avgDecodeMs;
   final int avgArrivalMs; // Average frame arrival interval
-  final int lastLatencyMs; // Last frame E2E latency (native capture → JS receive)
-  final int avgLatencyMs; // Average E2E latency
-  final int maxLatencyMs; // Max E2E latency seen
+  final int
+  lastLatencyMs; // Android SDK receipt → WebView processing, excluding Bluetooth
+  final int avgLatencyMs; // Average phone-local delay
+  final int maxLatencyMs; // Maximum phone-local delay
   final int totalBytes;
   final bool isJoined;
   final bool hasAudioTrack;
@@ -46,6 +48,7 @@ class LibJitsiStats {
   final int rtcRetransmits;
 
   const LibJitsiStats({
+    this.available = false,
     this.resolution = '0x0',
     this.width = 0,
     this.height = 0,
@@ -84,6 +87,7 @@ class LibJitsiStats {
 
   factory LibJitsiStats.fromJson(Map<String, dynamic> json) {
     return LibJitsiStats(
+      available: true,
       resolution: json['resolution'] as String? ?? '0x0',
       width: json['width'] as int? ?? 0,
       height: json['height'] as int? ?? 0,
@@ -120,6 +124,41 @@ class LibJitsiStats {
       rtcRetransmits: json['rtcRetransmits'] as int? ?? 0,
     );
   }
+
+  Map<String, dynamic> diagnosticSnapshot({required bool androidGlasses}) => {
+    'width': width,
+    'height': height,
+    'fps': fps,
+    'totalFrames': totalFrames,
+    'framesDrawn': framesDrawn,
+    'framesDroppedJs': framesDroppedJs,
+    'framesDroppedStale': framesDroppedStale,
+    'lastDecodeMs': lastDecodeMs,
+    'avgDecodeMs': avgDecodeMs,
+    'avgArrivalMs': avgArrivalMs,
+    'phoneLocalDelayMs': androidGlasses && framesDrawn > 0
+        ? lastLatencyMs
+        : null,
+    'phoneLocalDelayAvgMs': androidGlasses && framesDrawn > 0
+        ? avgLatencyMs
+        : null,
+    'phoneLocalDelayMaxMs': androidGlasses && framesDrawn > 0
+        ? maxLatencyMs
+        : null,
+    'isJoined': isJoined,
+    'wsConnected': wsConnected,
+    'hasAudioTrack': hasAudioTrack,
+    'hasVideoTrack': hasVideoTrack,
+    'rtcFramesEncoded': rtcFramesEncoded,
+    'rtcFramesSent': rtcFramesSent,
+    'rtcQualityLimitation': rtcQualityLimitation,
+    'rtcEncoderImpl': rtcEncoderImpl,
+    'rtcEncodeWidth': rtcEncodeWidth,
+    'rtcEncodeHeight': rtcEncodeHeight,
+    'rtcEncodeFps': rtcEncodeFps,
+    'rtcBytesSent': rtcBytesSent,
+    'rtcRetransmits': rtcRetransmits,
+  };
 
   String get bitrateFormatted {
     if (bitrate >= 1000) {
