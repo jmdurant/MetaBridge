@@ -122,7 +122,6 @@ class _StatsOverlayState extends State<StatsOverlay> {
 
     // Native server stats
     final useNativeServer = _nativeStats['useNativeServer'] ?? false;
-    final nativeServerRunning = _nativeStats['nativeServerRunning'] ?? false;
     final nativeServerHasClient = _nativeStats['nativeServerHasClient'] ?? false;
     final nativeFramesSent = _nativeStats['nativeFramesSent'] ?? 0;
     final nativeFramesDropped = _nativeStats['nativeFramesDropped'] ?? 0;
@@ -151,7 +150,6 @@ class _StatsOverlayState extends State<StatsOverlay> {
     // Extract Flutter stats
     final flutterSent = _flutterStats['framesSent'] ?? 0;
     final flutterDropped = _flutterStats['framesDropped'] ?? 0;
-    final flutterDropRate = _flutterStats['dropRate'] ?? 0;
     final flutterSlowSends = _flutterStats['wsSlowSends'] ?? 0;
 
     // Calculate EventChannel loss (only relevant if not using native server)

@@ -14,7 +14,7 @@ import java.nio.ByteBuffer
  *
  * Port 8766 (Flutter's FrameWebSocketServer uses 8765)
  */
-class NativeFrameServer(port: Int = DEFAULT_PORT) : WebSocketServer(InetSocketAddress(port)) {
+class NativeFrameServer(port: Int = DEFAULT_PORT) : WebSocketServer(InetSocketAddress("127.0.0.1", port)) {
 
     companion object {
         const val DEFAULT_PORT = 8766
@@ -32,7 +32,7 @@ class NativeFrameServer(port: Int = DEFAULT_PORT) : WebSocketServer(InetSocketAd
     private var framesWithBackpressure = 0L  // Frames sent when buffer already had pending data
 
     val hasClient: Boolean
-        get() = connectedClient != null && connectedClient!!.isOpen
+        get() = connectedClient?.isOpen == true
 
     // MARK: - WebSocketServer overrides
 
@@ -53,6 +53,7 @@ class NativeFrameServer(port: Int = DEFAULT_PORT) : WebSocketServer(InetSocketAd
     }
 
     override fun onMessage(conn: WebSocket, message: String) {
+        if (message == "frameReceived") return
         // We don't expect text messages, but log if received
         android.util.Log.d(TAG, "Received text message: $message")
     }
@@ -77,7 +78,7 @@ class NativeFrameServer(port: Int = DEFAULT_PORT) : WebSocketServer(InetSocketAd
     /**
      * Send a frame to the connected client
      *
-     * @param frameData Raw binary data (I420 with 8-byte header)
+     * @param frameData Raw binary data (I420 with 12-byte header) or JPEG
      * @return true if sent, false if no client or error
      */
     fun sendFrame(frameData: ByteArray): Boolean {
@@ -89,12 +90,15 @@ class NativeFrameServer(port: Int = DEFAULT_PORT) : WebSocketServer(InetSocketAd
         }
 
         return try {
-            // Check if buffer has pending data (backpressure indicator)
+            // Bound the send queue: old video is less useful than the next fresh frame.
             if (client.hasBufferedData()) {
                 framesWithBackpressure++
+                framesDropped++
+                return false
             }
 
-            client.send(frameData)
+            // WebSocket writes asynchronously; the capture buffers may be reused.
+            client.send(frameData.copyOf())
             framesSent++
 
             if (framesSent == 1L) {

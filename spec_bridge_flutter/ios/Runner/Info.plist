@@ -45,8 +45,6 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
-
-	<!-- URL Schemes for Deep Linking -->
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -66,8 +64,6 @@
 			</array>
 		</dict>
 	</array>
-
-	<!-- Meta Wearables DAT SDK Configuration -->
 	<key>MWDAT</key>
 	<dict>
 		<key>AppLinkURLScheme</key>
@@ -79,8 +75,6 @@
 		<key>TeamID</key>
 		<string>$(DEVELOPMENT_TEAM)</string>
 	</dict>
-
-	<!-- Permissions -->
 	<key>NSCameraUsageDescription</key>
 	<string>SpecBridge needs camera access to stream video from your Meta glasses to meetings.</string>
 	<key>NSMicrophoneUsageDescription</key>
@@ -91,20 +85,42 @@
 	<string>SpecBridge uses Bluetooth to communicate with your Meta glasses.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>SpecBridge uses local network access for video conferencing.</string>
-
-	<!-- Background Modes -->
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
-		<string>voip</string>
-		<string>bluetooth-central</string>
+		<string>bluetooth-peripheral</string>
+		<string>external-accessory</string>
 	</array>
-
-	<!-- Universal Links (Associated Domains configured in entitlements) -->
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
-		<string>fb-metaview</string>
-		<string>metaview</string>
+		<string>fb-viewapp</string>
 	</array>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+		<key>UISceneConfigurations</key>
+		<dict>
+			<key>UIWindowSceneSessionRoleApplication</key>
+			<array>
+				<dict>
+					<key>UISceneClassName</key>
+					<string>UIWindowScene</string>
+					<key>UISceneConfigurationName</key>
+					<string>flutter</string>
+					<key>UISceneDelegateClassName</key>
+					<string>$(PRODUCT_MODULE_NAME).SceneDelegate</string>
+					<key>UISceneStoryboardFile</key>
+					<string>Main</string>
+				</dict>
+			</array>
+		</dict>
+	</dict>
+	<key>UISupportedExternalAccessoryProtocols</key>
+	<array>
+		<string>com.meta.ar.wearable</string>
+	</array>
+	<key>FlutterDeepLinkingEnabled</key>
+	<false/>
 </dict>
 </plist>

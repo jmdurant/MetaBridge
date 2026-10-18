@@ -40,6 +40,7 @@ class _SplashScreenState extends State<SplashScreen> {
     // Request Android permissions first (Bluetooth required for Meta SDK)
     final permissionService = context.read<PermissionService>();
     await permissionService.requestAllPermissions();
+    if (!mounted) return;
 
     // Initialize glasses service (Meta SDK needs Bluetooth access)
     final glassesService = context.read<GlassesService>();

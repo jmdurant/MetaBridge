@@ -1,125 +1,75 @@
 # SpecBridge Flutter
 
-Stream video from Meta Ray-Ban smart glasses to Jitsi video meetings.
+SpecBridge sends video from Meta glasses to Jitsi meetings. This directory is the active Flutter application; the repository root's `SpecBridge.xcodeproj` is a separate Swift/Twitch prototype.
 
-## What It Does
-
-SpecBridge captures the camera feed from Meta Ray-Ban glasses and streams it to a Jitsi meeting as a screen share. Remote participants see exactly what the glasses wearer sees in real-time.
+Flutter owns setup, deep links, settings and call controls. Kotlin and Swift plugins capture glasses video using Meta DAT. A bundled `lib-jitsi-meet` runs inside a WebView and publishes the video. Phone camera mode uses the WebView's `getUserMedia()` directly.
 
 ## Requirements
 
-- Meta Ray-Ban smart glasses (paired with Meta View or Meta AI app)
-- Android device (API 26+) or iOS device
-- GitHub account (for Meta SDK access)
+- Flutter 3.44+ and Dart 3.12+ (validated with Flutter 3.47.7 / Dart 3.13.5).
+- Android 12+ device; Android SDK 37 to compile, target SDK 36, Java 21.
+- For iOS: Xcode with Swift 6 support, iOS 16+ device, a signing team for device installation.
+- Compatible Meta glasses paired in the Meta AI companion app. Configure Developer Mode or a release channel for your app.
 
-## Quick Start
+Meta DAT 1.0.1 is pinned on both platforms. Android now downloads from Maven Central; **no GitHub token is required**. iOS uses the official Swift Package, pinned in `ios/Runner.xcodeproj`. See [Meta Android setup](https://github.com/facebook/meta-wearables-dat-android#including-the-sdk-in-your-project) and [Meta iOS setup](https://github.com/facebook/meta-wearables-dat-ios#including-the-sdk-in-your-project).
 
-### 1. Get Meta SDK Access
+## Build and test
 
-Create a GitHub Personal Access Token with `read:packages` scope:
-https://github.com/settings/tokens/new
+Run from this directory:
 
-```bash
-export GITHUB_TOKEN=ghp_your_token_here
-```
-
-### 2. Build & Run
-
-```bash
-cd spec_bridge_flutter
+```sh
 flutter pub get
-flutter run
-```
-
-### 3. Connect Glasses
-
-1. Open the app
-2. Grant camera/microphone permissions
-3. Tap "Connect Glasses"
-4. Complete pairing in Meta View/AI app
-5. Enter room name and tap "Start Streaming"
-
-## Deep Links
-
-Join meetings directly via URL:
-
-```
-specbridge://join?room=MyRoom
-specbridge://join?room=Team&server=https://custom.jitsi.com&name=John
-```
-
-## Architecture
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed documentation.
-
-```
-Meta Glasses → Meta SDK → StreamSessionManager → JitsiFrameBridge → Jitsi Screen Share
-                                    ↓
-                            Flutter Preview (8fps)
-```
-
-## Project Structure
-
-```
-lib/
-├── services/           # Business logic
-│   ├── glasses_service.dart
-│   ├── jitsi_service.dart
-│   └── stream_service.dart
-├── presentation/       # UI screens
-│   └── screens/
-│       ├── setup/
-│       └── streaming/
-└── main.dart           # Entry point
-
-android/.../kotlin/
-├── MetaWearablesPlugin.kt    # Platform channel
-├── MetaWearablesManager.kt   # SDK wrapper
-├── StreamSessionManager.kt   # Video capture
-└── JitsiFrameBridge.kt       # Socket injection
-```
-
-## Tech Stack
-
-| Component | Technology |
-|-----------|------------|
-| Framework | Flutter 3.16+ |
-| State | Provider |
-| Navigation | GoRouter |
-| Video | Meta Wearables SDK |
-| Meetings | Jitsi Meet Flutter SDK |
-| Deep Links | app_links |
-
-## Configuration
-
-### Video Quality
-
-Default: 720p @ 24fps
-
-Configurable in `StreamSessionManager.kt`:
-- HIGH: 720x1280
-- MEDIUM: 504x896
-- LOW: 360x640
-
-### Jitsi Server
-
-Default: `meet.jit.si`
-
-Custom servers supported via deep link or setup screen.
-
-## Building
-
-```bash
-# Debug
+flutter test
+flutter analyze
+node --test test/js/*.test.cjs
 flutter build apk --debug
-
-# Release
-flutter build apk --release
-
-# iOS
-flutter build ios
+flutter build ios --simulator --debug --no-codesign
 ```
+
+To exercise the bundled Jitsi library and synthetic frame rendering in a desktop browser, run `python3 -m http.server 8800 --bind 127.0.0.1`, open `http://127.0.0.1:8800/test/browser/jitsi_bridge_smoke.html`, and click **Run smoke test**. This does not request camera/microphone access or join a meeting.
+
+For a physical device, use `flutter run`. On iOS, select your development team in `ios/Runner.xcworkspace`. Configure the app identifiers and release-channel values in `android/app/src/main/res/values/strings.xml` and `ios/Runner/Info.plist` for your Meta developer application. The existing iOS Meta application ID is retained; use the appropriate Developer Mode configuration for local testing.
+
+The Android release build still uses debug signing. Supply a release keystore configuration before distributing a release.
+
+## Use
+
+1. Grant phone microphone, camera and Bluetooth permissions.
+2. Connect/register the glasses through Meta AI and grant their camera permission.
+3. Choose the server and room, then start streaming.
+4. Wait for both the Jitsi join event and the glasses streaming state. A glasses pause is shown separately from a live stream.
+
+Fresh settings use low video quality at 15 fps and the phone speaker/microphone. Glasses audio shares Bluetooth bandwidth with video; test it independently. Settings currently default to `https://meet.ffmuc.net` and `SpecBridgeRoom`; choose your own server and room for real calls.
+
+## Deep links
+
+```text
+specbridge://join?room=MyRoom
+openemr-telehealth://join?room=MyRoom&server=https%3A%2F%2Fjitsi.example.org&name=Alex&jwt=TOKEN
+```
+
+URL-encode values. JWTs stay in the join flow and are not included in native deep-link logs. Server-specific XMPP configuration still needs validation; an arbitrary Jitsi deployment is not guaranteed to work with the default domain assumptions.
+
+## Dependencies
+
+| Component | Version |
+| --- | --- |
+| Meta DAT Android and iOS | 1.0.1 |
+| lib-jitsi-meet | v2228.0.0+572f49c8, bundled locally |
+| flutter_inappwebview | 6.2.0-beta.3, explicitly pinned prerelease |
+| go_router | 18.1.0 |
+| app_links | 7.2.2 |
+| permission_handler | 13.0.2 |
+| provider | 6.1.5+1 |
+| shared_preferences | 2.5.6 |
+| equatable / cupertino_icons | 3.0.0 / 2.0.0 |
+
+Commit `pubspec.lock`, `ios/Podfile.lock` and the Swift package resolution. Jitsi's upstream license, release URL and file checksums are in `assets/vendor/jitsi/`. To update it, take the UMD bundle, E2EE worker and license notices from an official [Jitsi release](https://github.com/jitsi/lib-jitsi-meet/releases), update `version.json`, run the bridge tests and test a call on both phones.
+
+## Validation and next steps
+
+The October 2026 review and upgrade are documented in [ARCHITECTURE.md](ARCHITECTURE.md), including remaining issues, performance priorities and physical-device checks. Build success and mocked bridge tests do not establish glasses connectivity, audio routing, end-to-end encryption interoperability or sustained background streaming.
 
 ## License
 
-MIT
+Application code: MIT, see the repository's `LICENSE`. Bundled Jitsi code retains its upstream licenses under `assets/vendor/jitsi/`.

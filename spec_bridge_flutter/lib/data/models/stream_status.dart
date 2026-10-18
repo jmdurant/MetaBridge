@@ -5,6 +5,7 @@ enum StreamStatus {
   idle,
   starting,
   streaming,
+  paused,
   stopping,
   stopped,
   error,
@@ -29,7 +30,7 @@ class StreamState extends Equatable {
   });
 
   bool get isStreaming => status == StreamStatus.streaming;
-  bool get isActive => status == StreamStatus.streaming || status == StreamStatus.starting;
+  bool get isActive => status == StreamStatus.streaming || status == StreamStatus.starting || status == StreamStatus.paused;
 
   StreamState copyWith({
     StreamStatus? status,

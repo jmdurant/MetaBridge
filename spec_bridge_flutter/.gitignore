@@ -33,6 +33,9 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# This is an application; keep dependency resolution reproducible.
+!pubspec.lock
+
 # Symbolication related
 app.*.symbols
 

@@ -515,6 +515,8 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
         return 'Starting...';
       case StreamStatus.streaming:
         return 'Live';
+      case StreamStatus.paused:
+        return 'Paused by glasses';
       case StreamStatus.stopping:
         return 'Stopping...';
       case StreamStatus.error:
@@ -532,6 +534,8 @@ class _StreamingScreenState extends State<StreamingScreen> with WidgetsBindingOb
         return Colors.orange;
       case StreamStatus.streaming:
         return Colors.green;
+      case StreamStatus.paused:
+        return Colors.orange;
       case StreamStatus.stopping:
         return Colors.orange;
       case StreamStatus.error:

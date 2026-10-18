@@ -23,12 +23,26 @@ class StreamService extends ChangeNotifier {
   VoidCallback? _libJitsiListener;
   Timer? _statsLogTimer;
   MetaDATChannel? _nativeChannel;
+  bool _captureRequested = false;
 
   StreamService(
     this._glassesService,
     this._bluetoothAudioService,
   ) {
-    // No initial setup needed - lib-jitsi-meet service is set later
+    _glassesService.addListener(_onCaptureState);
+  }
+
+  void _onCaptureState() {
+    if (!_captureRequested) return;
+    final status = switch (_glassesService.captureStatus) {
+      'streaming' => StreamStatus.streaming,
+      'paused' => StreamStatus.paused,
+      'stopping' => StreamStatus.stopping,
+      'stopped' => StreamStatus.stopped,
+      'error' => StreamStatus.error,
+      _ => StreamStatus.starting,
+    };
+    _updateState(_currentState.copyWith(status: status, errorMessage: _glassesService.captureError));
   }
 
   /// Set the lib-jitsi-meet service (called when available)
@@ -215,12 +229,15 @@ class StreamService extends ChangeNotifier {
 
       // Wait for XMPP signaling to complete - the 'joined' event sets isInMeeting=true
       // This is critical: frames are blocked until isInMeeting is true
-      await Future.delayed(const Duration(milliseconds: 1500));
-      debugPrint('StreamService: Meeting join initiated, isInMeeting=${_libJitsiService!.isInMeeting}');
+      if (!await _libJitsiService!.waitForJoined()) {
+        throw StateError(_libJitsiService!.currentState.errorMessage ??
+            'Timed out waiting to join the meeting');
+      }
 
       // For glasses mode, start native streaming after joining
       if (isGlassesMode) {
         debugPrint('StreamService: Starting glasses video capture...');
+        _captureRequested = true;
 
         // Start native streaming
         final captureStarted = await _glassesService.startStreaming(
@@ -262,6 +279,11 @@ class StreamService extends ChangeNotifier {
 
       debugPrint('StreamService: lib-jitsi-meet streaming started');
     } catch (e) {
+      _captureRequested = false;
+      try {
+        await _glassesService.stopStreaming();
+        await _libJitsiService?.leaveMeeting();
+      } catch (_) { /* Preserve the original startup error. */ }
       _updateState(_currentState.copyWith(
         status: StreamStatus.error,
         errorMessage: e.toString(),
@@ -272,6 +294,7 @@ class StreamService extends ChangeNotifier {
 
   /// Stop streaming and leave meeting
   Future<void> stopStreaming() async {
+    _captureRequested = false;
     _updateState(_currentState.copyWith(status: StreamStatus.stopping));
 
     // Stop stats logging
@@ -380,6 +403,8 @@ class StreamService extends ChangeNotifier {
 
   @override
   void dispose() {
+    _stopStatsLogging();
+    _glassesService.removeListener(_onCaptureState);
     _libJitsiFrameSubscription?.cancel();
     if (_libJitsiListener != null && _libJitsiService != null) {
       _libJitsiService!.removeListener(_libJitsiListener!);

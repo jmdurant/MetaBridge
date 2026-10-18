@@ -336,7 +336,10 @@ class LibJitsiService extends ChangeNotifier {
         break;
 
       case 'e2eeError':
-        debugPrint('LibJitsiService: E2EE error: ${data['message']}');
+        _updateState(_currentState.copyWith(
+          isE2EEEnabled: false,
+          errorMessage: data['message'] as String? ?? 'Encryption setup failed',
+        ));
         break;
 
       case 'cameraReady':
@@ -424,6 +427,29 @@ class LibJitsiService extends ChangeNotifier {
 
   bool _pendingUsePhoneMic = true;
 
+  /// Wait for the conference event, including slow networks and failed joins.
+  Future<bool> waitForJoined({
+    Duration timeout = const Duration(seconds: 30),
+  }) async {
+    final completed = Completer<bool>();
+    void checkState() {
+      if (completed.isCompleted) return;
+      if (_currentState.errorMessage != null) {
+        completed.complete(false);
+      } else if (_currentState.isInMeeting) {
+        completed.complete(true);
+      }
+    }
+
+    addListener(checkState);
+    checkState();
+    try {
+      return await completed.future.timeout(timeout, onTimeout: () => false);
+    } finally {
+      removeListener(checkState);
+    }
+  }
+
   Future<void> _joinWithConfig(MeetingConfig config, {bool usePhoneMic = true}) async {
     final server = config.serverUrl;
     final room = config.roomName;
@@ -435,9 +461,11 @@ class LibJitsiService extends ChangeNotifier {
     debugPrint('LibJitsiService: Joining $room on $server as $displayName (E2EE: $enableE2EE, usePhoneMic: $usePhoneMic, hasJWT: ${jwt != null})');
 
     // Pass null for JWT if not provided (JavaScript will handle null)
-    final jwtParam = jwt != null ? '"$jwt"' : 'null';
+    final arguments = jsonEncode([
+      server, room, displayName, enableE2EE, e2eePassphrase, usePhoneMic, jwt,
+    ]);
     await _controller?.evaluateJavascript(
-      source: 'joinRoom("$server", "$room", "$displayName", $enableE2EE, "$e2eePassphrase", $usePhoneMic, $jwtParam)',
+      source: 'joinRoom(...$arguments)',
     );
   }
 
@@ -595,7 +623,7 @@ class LibJitsiService extends ChangeNotifier {
 
       // Call JS setVideoSource - this returns immediately (Promise not awaited by evaluateJavascript)
       await _controller?.evaluateJavascript(
-        source: 'setVideoSource("$source")',
+        source: 'setVideoSource(${jsonEncode(source)})',
       );
 
       // For camera mode, wait for the actual cameraReady event from JS
@@ -751,6 +779,7 @@ class LibJitsiService extends ChangeNotifier {
         mediaPlaybackRequiresUserGesture: false,
         allowsInlineMediaPlayback: true,
         javaScriptEnabled: true,
+        useShouldOverrideUrlLoading: true,
         domStorageEnabled: true,
         databaseEnabled: true,
         useWideViewPort: true,

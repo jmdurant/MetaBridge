@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Jitsi bridge browser smoke test</title>
+<style>
+  body { font: 16px system-ui; margin: 24px; }
+  iframe { width: 320px; height: 240px; display: block; margin: 16px 0; }
+  pre { white-space: pre-wrap; }
+</style>
+<h1>Jitsi bridge browser smoke test</h1>
+<p>Uses synthetic frames and the bundled Jitsi library. No camera, microphone or meeting connection is requested.</p>
+<button id="run" disabled>Run smoke test</button>
+<iframe id="bridge" title="Production Jitsi bridge" src="../../assets/jitsi_bridge.html"></iframe>
+<pre id="result" role="status">Loading bridge…</pre>
+<script>
+  const frame = document.getElementById('bridge');
+  const button = document.getElementById('run');
+  const result = document.getElementById('result');
+  frame.onload = () => {
+    button.disabled = false;
+    result.textContent = 'Ready';
+  };
+  button.onclick = async () => {
+    button.disabled = true;
+    result.textContent = '';
+    const report = message => { result.textContent += message + '\n'; };
+    const check = (condition, message) => {
+      if (!condition) throw new Error(message);
+      report('PASS: ' + message);
+    };
+    let stream, localTrack;
+    try {
+      const bridge = frame.contentWindow;
+      const canvas = bridge.document.getElementById('videoCanvas');
+      const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+      check(bridge.document.getElementById('status').textContent === 'lib-jitsi-meet initialized', 'Bundled Jitsi initializes');
+      check(Boolean(gl), 'WebGL renderer available');
+
+      const width = 32, height = 32, ySize = width * height;
+      const bytes = new Uint8Array(12 + ySize * 1.5);
+      const header = new DataView(bytes.buffer);
+      header.setUint32(0, width, true);
+      header.setUint32(4, height, true);
+      header.setUint32(8, Date.now() >>> 0, true);
+      bytes.fill(76, 12, 12 + ySize);
+      bytes.fill(85, 12 + ySize, 12 + ySize * 1.25);
+      bytes.fill(255, 12 + ySize * 1.25);
+      await bridge.detectAndProcessFrame(new bridge.Blob([bytes]));
+      const pixel = new Uint8Array(4);
+      gl.readPixels(16, 16, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+      check(gl.getError() === gl.NO_ERROR && pixel[0] > 200 && pixel[1] < 40 && pixel[2] < 40, 'I420 frame renders red pixels');
+
+      const jpegCanvas = document.createElement('canvas');
+      jpegCanvas.width = width; jpegCanvas.height = height;
+      const context = jpegCanvas.getContext('2d');
+      context.fillStyle = '#00ff00'; context.fillRect(0, 0, width, height);
+      const jpeg = await new Promise(resolve => jpegCanvas.toBlob(resolve, 'image/jpeg', 0.95));
+      await bridge.detectAndProcessFrame(jpeg);
+      gl.readPixels(16, 16, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+      check(gl.getError() === gl.NO_ERROR && pixel[1] > 200 && pixel[0] < 40 && pixel[2] < 40, 'JPEG frame renders green pixels');
+
+      stream = canvas.captureStream(24);
+      const track = stream.getVideoTracks()[0];
+      localTrack = bridge.JitsiMeetJS.createLocalTracksFromMediaStreams([{
+        stream, track, sourceType: 'canvas', mediaType: 'video', videoType: 'camera',
+        constraints: { width: { ideal: width }, height: { ideal: height }, frameRate: { ideal: 24 } }
+      }])[0];
+      check(track.readyState === 'live' && localTrack.getType() === 'video', 'Bundled Jitsi accepts the canvas video track');
+      await localTrack.dispose();
+      localTrack = null;
+      check(track.readyState === 'ended', 'Disposing the Jitsi track stops capture');
+      report('All 6 browser checks passed. Device transport, audio, live calls and E2EE remain separate acceptance tests.');
+    } catch (error) {
+      report('FAIL: ' + error.message);
+    } finally {
+      if (localTrack) await localTrack.dispose();
+      if (stream) stream.getTracks().forEach(track => track.stop());
+      button.disabled = false;
+    }
+  };
+</script>
+</html>

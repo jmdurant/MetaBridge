@@ -104,6 +104,7 @@ class _SetupScreenState extends State<SetupScreen> {
     // Request Android permissions (Bluetooth, Camera, Mic) if not granted
     final permissionService = context.read<PermissionService>();
     final androidPermissionsGranted = await permissionService.requestAllPermissions();
+    if (!mounted) return;
     if (!androidPermissionsGranted) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -121,9 +122,9 @@ class _SetupScreenState extends State<SetupScreen> {
     final settingsService = context.read<SettingsService>();
 
     if (glassesService.videoSource == VideoSource.glasses) {
-      // Check if we already have permission saved locally
-      if (!settingsService.glassesCameraPermissionGranted) {
-        debugPrint('SetupScreen: Glasses camera permission not saved, requesting...');
+      // Permissions may be revoked in Meta AI between app launches.
+      if (await glassesService.checkCameraPermission() != GlassesPermissionStatus.granted) {
+        debugPrint('SetupScreen: Requesting glasses camera permission...');
 
         // Request permission from SDK
         final status = await glassesService.requestCameraPermission();
@@ -145,7 +146,7 @@ class _SetupScreenState extends State<SetupScreen> {
           return;
         }
       } else {
-        debugPrint('SetupScreen: Glasses camera permission already saved');
+        debugPrint('SetupScreen: Glasses camera permission confirmed by SDK');
       }
     }
 

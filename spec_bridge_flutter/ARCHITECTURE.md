@@ -1,342 +1,101 @@
-# SpecBridge Flutter - Architecture Documentation
+# Flutter Jitsi and Meta glasses architecture
 
-## Overview
+Reviewed 18 October 2026. The active app is `spec_bridge_flutter`; the separate root Swift/Twitch prototype is outside this upgrade. Both Flutter platform integrations now use Meta DAT 1.0.1 and explicit device/camera/stream lifecycles.
 
-SpecBridge streams video from Meta Ray-Ban smart glasses to Jitsi video meetings. The glasses camera feed is injected into Jitsi as a screen share, allowing remote participants to see what the glasses wearer sees.
+## Current video paths
 
-## High-Level Architecture
+```text
+Android glasses
+  Meta DAT decoded I420
+    → Kotlin frame envelope (12-byte header + I420)
+    → native loopback WebSocket :8766
+    → WebView WebGL canvas → captureStream() → Jitsi WebRTC
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         FLUTTER (Dart)                               │
-│                                                                      │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐             │
-│  │GlassesService│    │ JitsiService│    │StreamService│             │
-│  │   (state)    │    │   (state)   │    │   (state)   │             │
-│  └──────┬──────┘    └──────┬──────┘    └──────┬──────┘             │
-│         │                  │                  │                      │
-│         ▼                  ▼                  │                      │
-│  ┌─────────────┐    ┌─────────────┐          │                      │
-│  │MetaDATChannel│    │jitsi_meet_  │          │                      │
-│  │(MethodChannel)│   │flutter_sdk  │          │                      │
-│  └──────┬──────┘    └─────────────┘          │                      │
-└─────────┼────────────────────────────────────┼──────────────────────┘
-          │                                    │
-    ┌─────┴─────┐                              │
-    ▼           ▼                              │
-┌────────┐  ┌────────────────────────────────────────────────────────┐
-│  iOS   │  │                    ANDROID (Kotlin)                     │
-│(Swift) │  │                                                         │
-│        │  │  ┌──────────────────┐    ┌────────────────────────┐    │
-│        │  │  │MetaWearablesPlugin│───▶│  MetaWearablesManager  │    │
-│        │  │  └────────┬─────────┘    └───────────┬────────────┘    │
-│        │  │           │                          │                  │
-│        │  │           ▼                          ▼                  │
-│        │  │  ┌──────────────────┐    ┌────────────────────────┐    │
-│        │  │  │StreamSessionManager│   │   Meta Wearables SDK   │    │
-│        │  │  └────────┬─────────┘    │  (mwdat-core/camera)   │    │
-│        │  │           │              └────────────────────────┘    │
-│        │  │           ▼                                             │
-│        │  │  ┌──────────────────┐                                   │
-│        │  │  │ JitsiFrameBridge │──▶ Unix Socket ──▶ Jitsi Screen  │
-│        │  │  └──────────────────┘                      Share        │
-│        │  │                                                         │
-└────────┘  └─────────────────────────────────────────────────────────┘
+Android fallback
+  Same frame envelope → Flutter EventChannel → Dart loopback WebSocket :8765
+    → the same WebView renderer
+
+iOS glasses
+  Meta DAT raw video → latest-frame buffer → background JPEG conversion
+    → Flutter EventChannel → Dart loopback WebSocket :8765
+    → WebView JPEG renderer → canvas → captureStream() → Jitsi WebRTC
+
+Phone camera
+  WebView getUserMedia() → Jitsi WebRTC
 ```
 
-## Video Frame Flow
+The Android glasses path already uses raw I420; the old JPEG/Base64 architecture description was obsolete. The 12-byte little-endian header contains width, height and the low 32 bits of capture time in epoch milliseconds. Each frame owns its data. The renderer handles timestamp rollover and drops stale frames.
 
-```
-Meta Glasses Camera (720p @ 24fps)
-         │
-         ▼
-┌─────────────────────────────┐
-│  Meta Wearables SDK         │
-│  StreamSession.videoStream  │
-└─────────────┬───────────────┘
-              │
-              ▼
-┌─────────────────────────────┐
-│  StreamSessionManager       │
-│  - Converts to JPEG         │
-│  - 70% quality compression  │
-└─────────────┬───────────────┘
-              │
-       ┌──────┴──────┐
-       │             │
-       ▼             ▼
-┌─────────────┐ ┌─────────────────┐
-│JitsiFrame   │ │ Flutter Preview │
-│Bridge       │ │ (every 3rd     │
-│(all frames) │ │  frame = 8fps) │
-└──────┬──────┘ └─────────────────┘
-       │
-       ▼
-┌─────────────────────────────┐
-│  Unix Domain Socket         │
-│  /data/.../rtc_SSFD         │
-└─────────────┬───────────────┘
-              │
-              ▼
-┌─────────────────────────────┐
-│  Jitsi Screen Share         │
-│  (appears as shared screen) │
-└─────────────────────────────┘
-```
+Jitsi wraps both the glasses canvas and phone video as camera tracks. The old Unix-socket injection helpers remain as historical files but are not the active Flutter meeting transport. Restored iOS project membership excludes these unused helpers.
 
-## Project Structure
+Both WebSocket listeners bind to `127.0.0.1`. Android drops frames when the socket has buffered output. Dart permits one frame in flight and waits for the JavaScript `frameReceived` receipt. JavaScript keeps only the latest pending frame, so a slow decoder does not accumulate an application-level playback queue. iOS also buffers only the latest SDK frame before JPEG conversion.
 
-```
-spec_bridge_flutter/
-├── lib/
-│   ├── main.dart                    # App entry, Provider setup
-│   ├── app/
-│   │   ├── app.dart                 # MaterialApp + GoRouter
-│   │   ├── routes.dart              # Route definitions
-│   │   └── theme.dart               # App theming
-│   ├── data/
-│   │   └── models/
-│   │       ├── glasses_state.dart   # Glasses connection state
-│   │       ├── meeting_config.dart  # Jitsi meeting config
-│   │       └── stream_status.dart   # Streaming state
-│   ├── services/
-│   │   ├── glasses_service.dart     # Meta glasses abstraction
-│   │   ├── jitsi_service.dart       # Jitsi meeting management
-│   │   ├── stream_service.dart      # Orchestrates streaming
-│   │   ├── permission_service.dart  # System permissions
-│   │   ├── deep_link_service.dart   # URL handling
-│   │   └── platform_channels/
-│   │       └── meta_dat_channel.dart # Native bridge interface
-│   └── presentation/
-│       └── screens/
-│           ├── splash/              # Initial loading
-│           ├── setup/               # Glasses + meeting config
-│           └── streaming/           # Active stream view
-├── android/
-│   └── app/src/main/kotlin/com/specbridge/app/
-│       ├── MainActivity.kt          # Flutter activity
-│       ├── MetaWearablesPlugin.kt   # Platform channel handler
-│       ├── MetaWearablesManager.kt  # SDK wrapper
-│       ├── StreamSessionManager.kt  # Video capture
-│       └── JitsiFrameBridge.kt      # Socket injection
-└── ios/
-    └── Runner/Native/               # iOS Swift implementation
-```
+## Changes in this upgrade
 
-## State Management (Provider)
+| Previous issue | Current behavior |
+| --- | --- |
+| Android DAT 0.3.0 and obsolete streaming factory | DAT 1.0.1 from Maven Central; `DeviceSession → Camera → Stream`; no package credentials |
+| Flutter iOS had no Xcode project and referenced nonexistent Meta CocoaPods integration | Restored Flutter iOS project and resources, exact Meta Swift Package 1.0.1 |
+| iOS skipped SDK configuration and inferred registration from a callback URL | Calls `Wearables.configure()` and `handleUrl()`; observes actual registration state |
+| iOS tried to send full-rate frames to an unused Jitsi SDK socket | Sends glasses frames into the active WebView pipeline |
+| Jitsi loaded mutable JavaScript from meet.jit.si at every launch | Bundled official v2228.0.0+572f49c8 release, worker, licenses and checksums |
+| No Dart lockfile; dependency floors described Flutter 3.16 | Updated direct packages, added lockfile, Flutter 3.44 / Dart 3.12 minimum |
+| Gradle 8.13 rejected by installed Flutter | Gradle 8.14.4 with distribution checksum; compile SDK 37 for permission_handler |
+| Deep-link values interpolated directly into executable JavaScript | Arguments serialized with JSON; quotes/newlines remain data |
+| Full deep-link URLs logged natively | Logs omit URLs and their JWT query values |
+| Frame servers exposed camera bytes to LAN clients | Loopback-only listeners; bounded application queues |
+| Old native socket callbacks could reset a healthy fallback connection | Callbacks verify socket identity before changing state |
+| Reused frame buffers could change during asynchronous delivery | Independent frame ownership and safe queued sends |
+| Audio setup read an undefined `usePhoneMic` variable | Explicitly passes microphone preference to the connection callback |
+| E2EE failures were ignored and a requested setting was reported as success | Checks support, imports HKDF key material, configures before media, aborts on setup failure |
+| A fixed delay and “start accepted” were treated as live | Waits for conference-joined and SDK-streaming events; propagates paused/error states |
+| WebView automatically granted every resource permission | Navigation limited to the bridge asset; grants only local camera/microphone requests |
+| Tests consisted of `expect(true, isTrue)` | Regression tests cover bridge arguments, readiness/failure, registration, queues, reconnects, timestamps and navigation |
 
-```dart
-MultiProvider(
-  providers: [
-    // Platform channel (singleton)
-    Provider<MetaDATChannel>.value(value: metaDATChannel),
+## Remaining priorities
 
-    // Stateless utilities
-    Provider<PermissionService>(create: (_) => PermissionService()),
+1. **Validate a real call on each phone before release.** The migration crosses multiple DAT API changes and pins a new Jitsi client. Registration, glasses firmware compatibility, WebView media permission origins and hardware encoders require physical devices. Desktop Chrome smoke tests passed, but no live call or physical-device result is claimed.
+2. **Make meeting policy explicit.** Settings default to a public community server and a shared `SpecBridgeRoom`. Choose a controlled deployment, unique room identifiers and an authentication policy for the intended application. `joinRoom()` still derives `conference.<host>` and `focus.<host>`; deployments with different XMPP domains, tenants or URL prefixes need explicit configuration. JWT presence alone does not prove a compatible server configuration.
+3. **Finish initial mute handling.** `MeetingConfig.startWithVideoMuted` and `startWithAudioMuted` are not passed to the JavaScript join API. The default video-muted field therefore does not describe actual behavior. Decide the intended startup behavior and cover it with a media-track test before treating those flags as an enforceable policy.
+4. **Authenticate local frame consumers.** Loopback removes LAN exposure, but a per-session random token is still needed to prevent another local process or browser context from subscribing to a fixed port or replacing the client.
+5. **Measure and simplify the frame pipeline.** `processI420FrameInternal()` currently forces GPU completion with `gl.finish()` for timing on every frame. Make this optional diagnostic behavior. iOS additionally converts JPEG back through CPU RGBA/YUV processing. Benchmark raw frames on iOS, request-driven canvas capture and a native WebRTC capture integration against the existing path before committing to a rewrite.
+6. **Validate E2EE interoperability.** The shared-passphrase mode uses Jitsi's externally managed HKDF key path. Peers must use the same key protocol; this is not automatically compatible with the stock Jitsi UI's managed-key mode. Capability checks and mocked success/failure tests do not verify encrypted media between devices, worker loading, rekeying or behavior after reconnect.
+7. **Test background and recovery behavior.** iOS raw video may pause in the background, and an Android foreground service does not by itself guarantee continued WebView rendering. HEVC background capture is a separate transport/decoder project. Test app backgrounding, folding/removing glasses, network handoffs and repeated start/stop without assuming automatic recovery.
+8. **Finish release infrastructure.** Android release signing still uses the debug configuration. Configure real signing and Meta application/release-channel values. AGP 8.13.2 and Kotlin 2.3.0 still build, but current Flutter warns about their future support; upgrade them together with Gradle as a separate toolchain change. Generated machine-specific Flutter config files were already tracked in the repository and should be removed from source control in a cleanup.
 
-    // Reactive services with ChangeNotifier
-    ChangeNotifierProvider<DeepLinkService>.value(value: deepLinkService),
+For scale: tightly packed 504×896 I420 at 24 fps moves about 16.3 MB/s through local frame delivery before WebRTC compression. This is a calculation from dimensions and frame rate, not measured network bandwidth. Default 360×640 at 15 fps is about 5.2 MB/s. Reducing copies and unnecessary synchronization is likely more useful than increasing requested resolution first.
 
-    ChangeNotifierProxyProvider<MetaDATChannel, GlassesService>(...),
+## Verification
 
-    ChangeNotifierProvider<JitsiService>(create: (_) => JitsiService()),
+Run from `spec_bridge_flutter`:
 
-    ChangeNotifierProxyProvider2<GlassesService, JitsiService, StreamService>(...),
-
-    // Router
-    Provider<GoRouter>(create: (_) => createRouter()),
-  ],
-)
-```
-
-## Key Components
-
-### 1. GlassesService
-Manages Meta glasses connection lifecycle:
-- SDK initialization
-- Pairing via Meta View/Meta AI app
-- Camera permission handling
-- Video stream access
-
-### 2. JitsiService
-Handles Jitsi meeting integration:
-- Join/leave meetings
-- Audio/video mute controls
-- Screen share toggle
-- Meeting event callbacks
-
-### 3. StreamService
-Orchestrates the streaming pipeline:
-- Coordinates glasses + Jitsi
-- Manages frame flow
-- Handles errors and reconnection
-
-### 4. MetaDATChannel
-Flutter ↔ Native bridge:
-- MethodChannel for commands
-- EventChannel for state updates
-- EventChannel for frame data
-
-## Platform Channels
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     CHANNEL NAMES                            │
-├─────────────────────────────────────────────────────────────┤
-│ com.specbridge/meta_dat        │ MethodChannel (commands)   │
-│ com.specbridge/meta_dat_events │ EventChannel (state)       │
-│ com.specbridge/meta_dat_frames │ EventChannel (JPEG data)   │
-└─────────────────────────────────────────────────────────────┘
-
-METHODS:
-- configure()           → Initialize SDK
-- startRegistration()   → Begin pairing
-- handleUrl(url)        → Process callback
-- checkCameraPermission() → Query permission
-- requestCameraPermission() → Request permission
-- startStreaming(config) → Begin video capture
-- stopStreaming()       → End video capture
-
-EVENTS:
-- connectionState: {state: "connected"|"disconnected"|...}
-- streamStatus: {status: "streaming"|"stopped"|...}
-- incomingUrl: {url: "specbridge://..."}
-
-FRAMES:
-- Raw Uint8List JPEG data (every 3rd frame for preview)
-```
-
-## Deep Link Scheme
-
-```
-specbridge://
-├── /callback              # Meta View/AI app return
-│   → Completes pairing flow
-│
-└── /join                  # Direct meeting join
-    ?room=RoomName         # Required: room name
-    &server=https://...    # Optional: Jitsi server (default: meet.jit.si)
-    &name=DisplayName      # Optional: user display name
-
-Examples:
-  specbridge://callback
-  specbridge://join?room=MyMeeting
-  specbridge://join?room=Team&server=https://custom.jitsi.com&name=John
-```
-
-## Socket Injection (JitsiFrameBridge)
-
-The glasses video is injected into Jitsi via Unix domain socket, appearing as screen share:
-
-```kotlin
-// Socket path
-val socketPath = "${context.filesDir.absolutePath}/rtc_SSFD"
-
-// Frame message format (HTTP multipart style)
-"""
---frame-boundary
-Content-Type: image/jpeg
-Content-Length: ${jpegData.size}
-X-Frame-Index: $frameIndex
-X-Timestamp: ${System.currentTimeMillis() / 1000.0}
-
-[JPEG binary data]
-"""
-```
-
-## Video Quality Options
-
-| Quality | Resolution | Use Case |
-|---------|------------|----------|
-| HIGH    | 720×1280   | Default, best quality |
-| MEDIUM  | 504×896    | Lower bandwidth |
-| LOW     | 360×640    | Minimal bandwidth |
-
-Frame rates: 2, 7, 15, 24, or 30 FPS (default: 24)
-
-## User Flow
-
-```
-┌─────────┐     ┌──────────┐     ┌───────────┐     ┌───────────┐
-│ Splash  │────▶│  Setup   │────▶│ Streaming │────▶│   End     │
-│ Screen  │     │  Screen  │     │  Screen   │     │           │
-└─────────┘     └──────────┘     └───────────┘     └───────────┘
-     │               │                 │
-     │               │                 │
-     ▼               ▼                 ▼
- Initialize      1. Grant           Live view:
- SDK + check        permissions     - Video preview
- permissions     2. Connect         - Frame counter
-                    glasses         - Mute controls
-                 3. Configure       - End stream
-                    meeting
-                 4. Start
-```
-
-## Error Handling
-
-| Error | Cause | Recovery |
-|-------|-------|----------|
-| SDK init failed | Missing Meta app | Prompt to install Meta View |
-| Pairing timeout | User cancelled | Retry pairing |
-| Permission denied | User declined | Open settings |
-| Socket connect failed | Jitsi not ready | Retry with backoff |
-| Frame send failed | Socket closed | Reconnect socket |
-
-## Dependencies
-
-```yaml
-# State Management
-provider: ^6.1.5
-
-# Navigation
-go_router: ^17.0.1
-app_links: ^7.0.0
-
-# Jitsi
-jitsi_meet_flutter_sdk: ^11.6.0
-
-# Permissions
-permission_handler: ^12.0.1
-
-# Storage
-shared_preferences: ^2.5.4
-```
-
-```kotlin
-// Android (build.gradle.kts)
-com.meta.wearable:mwdat-core:0.3.0
-com.meta.wearable:mwdat-camera:0.3.0
-org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0
-androidx.lifecycle:lifecycle-runtime-ktx:2.8.7
-```
-
-## Build Requirements
-
-### Android
-- Gradle 9.2.1
-- Android Gradle Plugin 8.13.0
-- Kotlin 2.1.0
-- Java 21
-- compileSdk/targetSdk 36
-- minSdk 26
-
-### Meta SDK Access
-```bash
-# Set GitHub token with read:packages scope
-export GITHUB_TOKEN=ghp_xxxxx
-flutter build apk
-```
-
-## Testing
-
-```bash
-# Analysis
+```sh
+flutter test
 flutter analyze
-
-# Build debug APK
+node --test test/js/*.test.cjs
 flutter build apk --debug
-
-# Build release APK
-flutter build apk --release
+flutter build ios --simulator --debug --no-codesign
 ```
+
+The automated suite has 11 Flutter tests and 6 JavaScript tests. Tests use a recording WebView, real local Dart WebSockets and mocked Jitsi/browser APIs; they do not substitute for device media tests. Flutter analysis, Android debug and iOS simulator compilation have passed.
+
+The browser smoke test at `test/browser/jitsi_bridge_smoke.html` additionally passed six checks in desktop Chrome using the actual bundled Jitsi library: initialization, WebGL availability, synthetic I420 and JPEG pixel rendering, canvas video-track creation, and capture cleanup on disposal. It makes no camera/microphone request and does not join a meeting. No release upload, signing change for distribution or physical-glasses test was performed.
+
+Device acceptance checks:
+
+- Register, cancel registration, unregister and re-register. Confirm the UI follows SDK state.
+- Deny and subsequently grant glasses camera permission, including revocation in Meta AI.
+- Join with quotes/unicode in participant names and a real JWT-enabled deployment.
+- Verify phone and glasses microphone routing with a remote participant.
+- Stream low/15, medium/24 and high/24; measure remote latency, dropped frames, memory and thermal behavior over at least 15 minutes.
+- Fold/remove glasses, pause/resume, background/foreground and switch Wi-Fi/cellular. Confirm state and cleanup after stop-during-start and repeated joins.
+- Validate E2EE success with compatible peers and failure on unsupported WebViews, including mismatched keys and reconnects.
+
+## Upstream references
+
+- [Meta Android installation](https://github.com/facebook/meta-wearables-dat-android#including-the-sdk-in-your-project)
+- [Meta Android release changes](https://github.com/facebook/meta-wearables-dat-android/blob/main/CHANGELOG.md)
+- [Meta iOS installation](https://github.com/facebook/meta-wearables-dat-ios#including-the-sdk-in-your-project)
+- [Meta iOS release changes](https://github.com/facebook/meta-wearables-dat-ios/blob/main/CHANGELOG.md)
+- [Pinned Jitsi release](https://github.com/jitsi/lib-jitsi-meet/releases/tag/v2228.0.0%2B572f49c8)
+- [Jitsi low-level API](https://jitsi.github.io/handbook/docs/dev-guide/dev-guide-ljm-api/)

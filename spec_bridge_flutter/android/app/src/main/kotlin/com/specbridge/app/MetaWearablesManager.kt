@@ -1,6 +1,8 @@
 package com.specbridge.app
 
-import android.content.Context
+import android.app.Activity
+import kotlinx.coroutines.cancel
+import com.meta.wearable.dat.core.types.WearablesError
 import com.meta.wearable.dat.core.Wearables
 import com.meta.wearable.dat.core.types.Permission
 import com.meta.wearable.dat.core.types.PermissionStatus
@@ -30,7 +32,7 @@ enum class ConnectionState {
  * Manager for Meta Wearables SDK interactions on Android
  * Based on the official CameraAccess sample app
  */
-class MetaWearablesManager(private val context: Context) {
+class MetaWearablesManager(private val context: Activity) {
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
@@ -50,16 +52,23 @@ class MetaWearablesManager(private val context: Context) {
     fun configure(): Boolean {
         return try {
             // Initialize the SDK - must be called before any other Wearables APIs
-            Wearables.initialize(context)
+            if (isConfigured) return true
+            val initialized = Wearables.initialize(context)
+            initialized.onFailure { error, _ ->
+                if (error != WearablesError.ALREADY_INITIALIZED) {
+                    android.util.Log.e("MetaWearablesManager", error.description)
+                    return false
+                }
+            }
             isConfigured = true
 
             // Observe registration state
             scope.launch {
                 Wearables.registrationState.collect { state ->
                     _connectionState.value = when (state) {
-                        is RegistrationState.Registered -> ConnectionState.CONNECTED
-                        is RegistrationState.Registering -> ConnectionState.CONNECTING
-                        is RegistrationState.Unavailable -> ConnectionState.DISCONNECTED
+                        RegistrationState.REGISTERED -> ConnectionState.CONNECTED
+                        RegistrationState.REGISTERING -> ConnectionState.CONNECTING
+                        RegistrationState.UNAVAILABLE -> ConnectionState.DISCONNECTED
                         else -> ConnectionState.DISCONNECTED
                     }
                 }
@@ -67,7 +76,7 @@ class MetaWearablesManager(private val context: Context) {
 
             // Observe available devices via device selector
             scope.launch {
-                deviceSelector.activeDevice(Wearables.devices).collect { device ->
+                deviceSelector.activeDeviceFlow().collect { device ->
                     _hasActiveDevice.value = device != null
                 }
             }
@@ -125,6 +134,8 @@ class MetaWearablesManager(private val context: Context) {
     }
 
     // MARK: - Cleanup
+
+    fun dispose() { scope.cancel() }
 
     fun disconnect() {
         try {

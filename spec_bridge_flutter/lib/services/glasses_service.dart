@@ -11,6 +11,8 @@ class GlassesService extends ChangeNotifier {
 
   GlassesState _currentState = const GlassesState();
   StreamSubscription? _eventSubscription;
+  String captureStatus = 'stopped';
+  String? captureError;
 
   GlassesService(this._channel) {
     _listenToEvents();
@@ -35,7 +37,9 @@ class GlassesService extends ChangeNotifier {
           ));
           break;
         case StreamStatusEvent():
-          // Stream status is handled by StreamService
+          captureStatus = event.status;
+          captureError = event.errorMessage;
+          notifyListeners();
           break;
         case FramePreviewEvent():
           // Frames are handled via previewFrameStream
@@ -68,13 +72,9 @@ class GlassesService extends ChangeNotifier {
 
   /// Handle return URL from Meta View app
   Future<bool> handleMetaViewCallback(String url) async {
-    final result = await _channel.handleUrl(url);
-    if (result) {
-      _updateState(_currentState.copyWith(
-        connection: GlassesConnectionState.connected,
-      ));
-    }
-    return result;
+    // A handled URL is not proof of registration. Native SDK state events
+    // report whether registration actually succeeded or was cancelled.
+    return await _channel.handleUrl(url);
   }
 
   /// Check if camera permission is granted
@@ -116,7 +116,23 @@ class GlassesService extends ChangeNotifier {
       videoSource: _currentState.videoSource,
       videoQuality: videoQuality,
     );
-    return await _channel.startStreaming(config);
+    captureStatus = 'starting';
+    captureError = null;
+    notifyListeners();
+    if (!await _channel.startStreaming(config)) return false;
+    final ready = Completer<bool>();
+    void checkStatus() {
+      if (ready.isCompleted) return;
+      if (captureStatus == 'streaming') ready.complete(true);
+      if (captureStatus == 'error' || captureStatus == 'stopped') ready.complete(false);
+    }
+    addListener(checkStatus);
+    checkStatus();
+    try {
+      return await ready.future.timeout(const Duration(seconds: 30), onTimeout: () => false);
+    } finally {
+      removeListener(checkStatus);
+    }
   }
 
   /// Stop video streaming

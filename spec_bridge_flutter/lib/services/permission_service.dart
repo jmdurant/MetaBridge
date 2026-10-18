@@ -24,7 +24,7 @@ class PermissionService {
   Future<bool> checkAllPermissions() async {
     final camera = await Permission.camera.isGranted;
     final microphone = await Permission.microphone.isGranted;
-    final bluetoothConnect = await Permission.bluetoothConnect.isGranted;
+    final bluetoothConnect = await checkBluetooth();
 
     return camera && microphone && bluetoothConnect;
   }
@@ -43,6 +43,7 @@ class PermissionService {
 
   /// Request Bluetooth permission
   Future<bool> requestBluetooth() async {
+    if (Platform.isIOS) return (await Permission.bluetooth.request()).isGranted;
     // Android 12+ requires BLUETOOTH_CONNECT for paired device access
     final connectStatus = await Permission.bluetoothConnect.request();
 
@@ -67,7 +68,7 @@ class PermissionService {
 
   /// Check Bluetooth permission status
   Future<bool> checkBluetooth() async {
-    return await Permission.bluetoothConnect.isGranted;
+    return await (Platform.isIOS ? Permission.bluetooth : Permission.bluetoothConnect).isGranted;
   }
 
   /// Request overlay permission (Android only, for floating preview)
@@ -103,6 +104,6 @@ class PermissionService {
   }
 
   Future<PermissionStatus> getBluetoothStatus() async {
-    return await Permission.bluetoothConnect.status;
+    return await (Platform.isIOS ? Permission.bluetooth : Permission.bluetoothConnect).status;
   }
 }

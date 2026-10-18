@@ -14,15 +14,7 @@ allprojects {
         google()
         mavenCentral()
 
-        // Meta Wearables SDK repository
-        // Requires GitHub token with read:packages scope
-        maven {
-            url = uri("https://maven.pkg.github.com/facebook/meta-wearables-dat-android")
-            credentials {
-                username = ""
-                password = System.getenv("GITHUB_TOKEN") ?: ""
-            }
-        }
+
     }
 }
 

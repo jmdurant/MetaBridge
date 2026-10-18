@@ -84,7 +84,7 @@ class DeepLinkService extends ChangeNotifier {
     // Check if Meta View callback
     // specbridge://callback or specbridge://
     if (uri.scheme == 'specbridge') {
-      if (uri.host == 'callback' || uri.path.contains('callback')) {
+      if (uri.host == 'callback' || uri.host.isEmpty) {
         event = MetaViewCallbackEvent(link);
       }
       // Check if meeting join link
@@ -193,7 +193,7 @@ class DeepLinkService extends ChangeNotifier {
     final uri = Uri.tryParse(_initialLink!);
     if (uri == null) return false;
     return uri.scheme == 'specbridge' &&
-        (uri.host == 'callback' || uri.path.contains('callback'));
+        (uri.host == 'callback' || uri.host.isEmpty);
   }
 
   @override

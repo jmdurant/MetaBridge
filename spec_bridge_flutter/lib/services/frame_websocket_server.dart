@@ -12,6 +12,8 @@ class FrameWebSocketServer {
 
   HttpServer? _server;
   WebSocket? _client;
+  bool _awaitingFrameReceipt = false;
+  Future<bool>? _starting;
   int _port = defaultPort;
 
   bool _isRunning = false;
@@ -27,7 +29,12 @@ class FrameWebSocketServer {
   int get framesDropped => _framesDropped;
 
   /// Start the WebSocket server
-  Future<bool> start({int port = defaultPort}) async {
+  Future<bool> start({int port = defaultPort}) {
+    if (_isRunning) return Future.value(true);
+    return _starting ??= _start(port).whenComplete(() => _starting = null);
+  }
+
+  Future<bool> _start(int port) async {
     if (_isRunning) {
       debugPrint('FrameWebSocketServer: Already running on port $_port');
       return true;
@@ -35,15 +42,16 @@ class FrameWebSocketServer {
 
     try {
       _port = port;
-      // Bind to all interfaces so WebView can connect
-      _server = await HttpServer.bind(InternetAddress.anyIPv4, port);
+      // The WebView connects locally; never expose camera frames to the LAN.
+      _server = await HttpServer.bind(InternetAddress.loopbackIPv4, port);
+      _port = _server!.port;
       _isRunning = true;
       _framesSent = 0;
       _framesDropped = 0;
       _framesWithSlowSend = 0;
       _lastSendTimeMs = 0;
 
-      debugPrint('FrameWebSocketServer: Started on ws://0.0.0.0:$port');
+      debugPrint('FrameWebSocketServer: Started on ws://127.0.0.1:$_port');
 
       // Listen for WebSocket upgrade requests
       _server!.listen((HttpRequest request) async {
@@ -77,11 +85,13 @@ class FrameWebSocketServer {
     // Close any existing client
     _client?.close();
     _client = socket;
+    _awaitingFrameReceipt = false;
 
     socket.listen(
       (data) {
-        // We don't expect data from client, but log if received
-        debugPrint('FrameWebSocketServer: Received data from client: $data');
+        if (_client == socket && data == 'frameReceived') {
+          _awaitingFrameReceipt = false;
+        }
       },
       onDone: () {
         debugPrint('FrameWebSocketServer: Client disconnected');
@@ -100,7 +110,7 @@ class FrameWebSocketServer {
 
   /// Send a frame to the connected client
   void sendFrame(Uint8List frameData) {
-    if (_client == null) {
+    if (_client == null || _awaitingFrameReceipt) {
       _framesDropped++;
       return;
     }
@@ -114,6 +124,7 @@ class FrameWebSocketServer {
       }
       _lastSendTimeMs = now;
 
+      _awaitingFrameReceipt = true;
       _client!.add(frameData);
       _framesSent++;
 
@@ -124,6 +135,7 @@ class FrameWebSocketServer {
         debugPrint('FrameWebSocketServer: Sent $_framesSent frames, dropped $_framesDropped, slow $_framesWithSlowSend');
       }
     } catch (e) {
+      _awaitingFrameReceipt = false;
       debugPrint('FrameWebSocketServer: Send error: $e');
       _framesDropped++;
     }
@@ -131,10 +143,12 @@ class FrameWebSocketServer {
 
   /// Stop the server
   Future<void> stop() async {
+    await _starting;
     debugPrint('FrameWebSocketServer: Stopping...');
 
     await _client?.close();
     _client = null;
+    _awaitingFrameReceipt = false;
 
     await _server?.close();
     _server = null;

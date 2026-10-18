@@ -333,74 +333,61 @@ function connectWebSocket() {
   tryConnectToServer(NATIVE_WS_PORT, true);
 }
 
+function scheduleFrameReconnect() {
+  if (wsReconnectTimer) return;
+  wsReconnectTimer = setTimeout(() => {
+    wsReconnectTimer = null;
+    connectWebSocket();
+  }, 2000);
+}
+
 function tryConnectToServer(port, tryFallback) {
-  console.log(`[JitsiBridge] Connecting to WebSocket on port ${port}...`);
-  updateStatus(`Connecting to frame server (port ${port})...`);
-
+  // Each callback owns its socket. A delayed close/error from the native
+  // attempt must not reset or close an already-connected Flutter fallback.
+  let socket;
   try {
-    // Use 127.0.0.1 explicitly - localhost may not resolve correctly in WebView
-    frameSocket = new WebSocket(`ws://127.0.0.1:${port}`);
-    frameSocket.binaryType = 'blob';
-
-    // Set a connection timeout
-    const connectionTimeout = setTimeout(() => {
-      if (frameSocket.readyState !== WebSocket.OPEN) {
-        console.log(`[JitsiBridge] Connection timeout on port ${port}`);
-        frameSocket.close();
-        if (tryFallback && port === NATIVE_WS_PORT) {
-          console.log('[JitsiBridge] Falling back to Flutter server...');
-          tryConnectToServer(FLUTTER_WS_PORT, false);
-        }
-      }
-    }, 2000);
-
-    frameSocket.onopen = () => {
-      clearTimeout(connectionTimeout);
-      usingNativeServer = (port === NATIVE_WS_PORT);
-      const serverType = usingNativeServer ? 'NATIVE' : 'FLUTTER';
-      console.log(`[JitsiBridge] WebSocket connected (${serverType} server, port ${port})`);
-      updateStatus(`Frame server connected (${serverType})`);
-      wsConnected = true;
-      notifyFlutter('wsConnected', { native: usingNativeServer, port: port });
-    };
-
-    frameSocket.onmessage = (event) => {
-      // Receive binary blob directly - no base64 decoding needed!
-      handleBinaryFrame(event.data);
-    };
-
-    frameSocket.onclose = () => {
-      clearTimeout(connectionTimeout);
-      console.log('[JitsiBridge] WebSocket disconnected');
-      wsConnected = false;
-      usingNativeServer = false;
-      notifyFlutter('wsDisconnected', {});
-      // Retry connection after delay - start with native server again
-      if (!wsReconnectTimer) {
-        wsReconnectTimer = setTimeout(() => {
-          wsReconnectTimer = null;
-          connectWebSocket();
-        }, 2000);
-      }
-    };
-
-    frameSocket.onerror = (error) => {
-      clearTimeout(connectionTimeout);
-      console.log(`[JitsiBridge] WebSocket error on port ${port}`);
-      wsConnected = false;
-      // If native server failed and we should try fallback
-      if (tryFallback && port === NATIVE_WS_PORT) {
-        console.log('[JitsiBridge] Native server unavailable, trying Flutter server...');
-        tryConnectToServer(FLUTTER_WS_PORT, false);
-      }
-    };
-  } catch (e) {
-    console.error('[JitsiBridge] WebSocket connection failed:', e);
-    wsConnected = false;
-    if (tryFallback && port === NATIVE_WS_PORT) {
-      tryConnectToServer(FLUTTER_WS_PORT, false);
-    }
+    socket = new WebSocket(`ws://127.0.0.1:${port}`);
+  } catch (error) {
+    if (tryFallback) tryConnectToServer(FLUTTER_WS_PORT, false);
+    else scheduleFrameReconnect();
+    return;
   }
+  frameSocket = socket;
+  socket.binaryType = 'blob';
+
+  const failed = () => {
+    clearTimeout(connectionTimeout);
+    if (frameSocket !== socket) return;
+    frameSocket = null;
+    wsConnected = false;
+    usingNativeServer = false;
+    socket.close();
+    notifyFlutter('wsDisconnected', {});
+    if (tryFallback) tryConnectToServer(FLUTTER_WS_PORT, false);
+    else scheduleFrameReconnect();
+  };
+  const connectionTimeout = setTimeout(failed, 2000);
+
+  socket.onopen = () => {
+    clearTimeout(connectionTimeout);
+    if (frameSocket !== socket) {
+      socket.close();
+      return;
+    }
+    if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = null;
+    usingNativeServer = port === NATIVE_WS_PORT;
+    wsConnected = true;
+    notifyFlutter('wsConnected', { native: usingNativeServer, port });
+  };
+  socket.onmessage = (event) => {
+    if (frameSocket !== socket) return;
+    handleBinaryFrame(event.data);
+    // Receipt bounds the Dart server's queue even if the WebView is suspended.
+    if (socket.readyState === WebSocket.OPEN) socket.send('frameReceived');
+  };
+  socket.onclose = failed;
+  socket.onerror = failed;
 }
 
 // Single-frame buffer - always keep only the latest frame
@@ -639,10 +626,8 @@ async function processI420FrameInternal(blob) {
     const frameTimestamp = preAllocatedDataView.getUint32(8, true);  // low 32 bits of sender timestamp
 
     // Check frame age - drop if too old (prevents backlog from accumulating)
-    const now = Date.now() & 0xFFFFFFFF;  // Low 32 bits for comparison
-    let frameAge = now - frameTimestamp;
-    // Handle wraparound (timestamp wraps every ~49 days, but we only care about small deltas)
-    if (frameAge < 0) frameAge += 0x100000000;
+    // Unsigned subtraction works across both the sign bit and uint32 rollover.
+    const frameAge = ((Date.now() >>> 0) - frameTimestamp) >>> 0;
     if (frameAge > MAX_FRAME_AGE_MS && frameAge < 0x80000000) {  // Sanity check: ignore huge values (wraparound)
       framesDroppedStale++;
       if (framesDroppedStale === 1 || framesDroppedStale % 50 === 0) {
@@ -847,7 +832,7 @@ async function joinRoom(server, room, displayName, enableE2EE = false, e2eePassp
     // Connection event listeners
     connection.addEventListener(
       JitsiMeetJS.events.connection.CONNECTION_ESTABLISHED,
-      () => onConnectionEstablished(room, displayName)
+      () => onConnectionEstablished(room, displayName, usePhoneMic)
     );
 
     connection.addEventListener(
@@ -873,7 +858,7 @@ async function joinRoom(server, room, displayName, enableE2EE = false, e2eePassp
   }
 }
 
-async function onConnectionEstablished(room, displayName) {
+async function onConnectionEstablished(room, displayName, usePhoneMic = true) {
   updateStatus('Connected, joining room: ' + room);
 
   try {
@@ -885,7 +870,7 @@ async function onConnectionEstablished(room, displayName) {
         enabled: true
       },
       e2ee: {
-        enabled: e2eeConfig.enabled
+        externallyManagedKey: e2eeConfig.enabled
       },
       // Video quality settings with codec preferences for hardware encoding
       // IMPORTANT: Only H264 has reliable hardware encoder support on Android
@@ -915,6 +900,17 @@ async function onConnectionEstablished(room, displayName) {
         }
       }
     });
+
+    // Establish encryption before attaching any media or joining the room.
+    if (e2eeConfig.enabled) {
+      try {
+        await setupE2EE(e2eeConfig.passphrase);
+      } catch (error) {
+        await leaveRoom();
+        notifyFlutter('e2eeError', { message: error.message || String(error) });
+        return;
+      }
+    }
 
     // Create audio track from microphone
     // Note: When usePhoneMic=true, native code has already forced speakerphone mode,
@@ -1014,20 +1010,10 @@ async function onConnectionEstablished(room, displayName) {
         }
       }
 
-      // Enable E2EE if configured
-      if (e2eeConfig.enabled && e2eeConfig.passphrase) {
-        try {
-          await setupE2EE(e2eeConfig.passphrase);
-        } catch (e) {
-          console.error('[JitsiBridge] E2EE setup failed:', e);
-          notifyFlutter('e2eeError', { message: e.message || String(e) });
-        }
-      }
-
       // Start WebRTC stats collector to track encoder performance
       startRtcStatsCollector();
 
-      notifyFlutter('joined', { room: room, e2ee: e2eeConfig.enabled });
+      notifyFlutter('joined', { room: room, e2ee: isE2EEEnabled });
     });
 
     conference.on(JitsiMeetJS.events.conference.CONFERENCE_LEFT, () => {
@@ -1462,15 +1448,25 @@ async function setupE2EE(passphrase) {
   try {
     console.log('[JitsiBridge] Setting up E2EE...');
 
-    // Set the encryption key from passphrase
+    if (!passphrase || !conference.isE2EESupported?.() || !crypto?.subtle) {
+      throw new Error('End-to-end encryption is unavailable or the passphrase is empty');
+    }
+    // Jitsi's externally managed key API expects HKDF CryptoKey material.
+    const key = await crypto.subtle.importKey(
+      'raw', new TextEncoder().encode(passphrase), 'HKDF', false,
+      ['deriveBits', 'deriveKey']
+    );
     await conference.setMediaEncryptionKey({
-      encryptionKey: passphrase,
+      encryptionKey: key,
       index: 0
     });
 
     // Enable E2EE
     await conference.toggleE2EE(true);
 
+    if (!conference.isE2EEEnabled?.()) {
+      throw new Error('Jitsi did not enable end-to-end encryption');
+    }
     isE2EEEnabled = true;
     updateStatus('E2EE enabled');
     notifyFlutter('e2eeEnabled', {});

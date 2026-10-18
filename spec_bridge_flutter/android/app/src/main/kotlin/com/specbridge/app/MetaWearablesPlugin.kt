@@ -25,6 +25,8 @@ class MetaWearablesPlugin(
 
     private var wearablesManager: MetaWearablesManager? = null
     private var streamManager: StreamSessionManager? = null
+    private var streamStatusJob: Job? = null
+    private var cameraFrameJob: Job? = null
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
@@ -78,6 +80,10 @@ class MetaWearablesPlugin(
     private fun configure(result: MethodChannel.Result) {
         scope.launch {
             try {
+                if (wearablesManager != null) {
+                    result.success(true)
+                    return@launch
+                }
                 wearablesManager = MetaWearablesManager(activity)
                 val success = wearablesManager!!.configure()
 
@@ -230,8 +236,15 @@ class MetaWearablesPlugin(
             return
         }
 
-        // Initialize stream session manager for glasses
-        streamManager = StreamSessionManager(activity, manager)
+        if (streamManager != null) {
+            result.error("ALREADY_STREAMING", "Stop the current stream before starting again", null)
+            return
+        }
+        val capture = StreamSessionManager(activity, manager)
+        streamManager = capture
+        capture.onError = { message ->
+            sendEvent(mapOf("type" to "streamStatus", "status" to "error", "error" to message))
+        }
 
         // Use direct callback for frame delivery
         streamManager!!.onFrameReady = { frameData ->
@@ -246,8 +259,9 @@ class MetaWearablesPlugin(
         }
 
         // Observe stream status
-        scope.launch {
-            streamManager!!.statusFlow.collectLatest { status ->
+        streamStatusJob?.cancel()
+        streamStatusJob = scope.launch {
+            capture.statusFlow.collectLatest { status ->
                 sendEvent(mapOf(
                     "type" to "streamStatus",
                     "status" to status
@@ -255,13 +269,8 @@ class MetaWearablesPlugin(
             }
         }
 
-        val success = streamManager!!.startStreaming(width, height, frameRate, videoQuality)
-        if (success) {
-            sendEvent(mapOf(
-                "type" to "streamStatus",
-                "status" to "streaming"
-            ))
-        }
+        val success = capture.startStreaming(width, height, frameRate, videoQuality)
+        // Acceptance is not STREAMING; the SDK state collector reports readiness.
         result.success(success)
     }
 
@@ -275,7 +284,8 @@ class MetaWearablesPlugin(
 
         if (success) {
             // Observe frames from camera
-            scope.launch {
+            cameraFrameJob?.cancel()
+            cameraFrameJob = scope.launch {
                 camera.frameFlow.collectLatest { frameData ->
                     // Send to floating overlay for MediaProjection capture
                     if (FloatingPreviewService.isRunning()) {
@@ -305,8 +315,13 @@ class MetaWearablesPlugin(
 
     private fun stopStreaming(result: MethodChannel.Result) {
         scope.launch {
+            streamStatusJob?.cancel()
+            streamStatusJob = null
+            cameraFrameJob?.cancel()
+            cameraFrameJob = null
             // Stop glasses streaming
-            streamManager?.stopStreaming()
+            streamManager?.stopAndWait()
+            streamManager?.dispose()
             streamManager = null
 
             // Stop camera streaming
@@ -457,8 +472,13 @@ class MetaWearablesPlugin(
     private fun disconnect(result: MethodChannel.Result) {
         scope.launch {
             try {
+                streamStatusJob?.cancel()
+                streamStatusJob = null
+                cameraFrameJob?.cancel()
+                cameraFrameJob = null
                 // Stop any streaming first
-                streamManager?.stopStreaming()
+                streamManager?.stopAndWait()
+                streamManager?.dispose()
                 streamManager = null
                 cameraManager?.stopCapture()
                 cameraManager = null
@@ -495,15 +515,18 @@ class MetaWearablesPlugin(
     }
 
     private fun sendFrame(data: ByteArray) {
+        // Capture buffers can be reused before the UI-thread task executes.
+        val snapshot = data.copyOf()
         // EventSink requires UI thread
         activity.runOnUiThread {
-            frameSink?.success(data)
+            frameSink?.success(snapshot)
         }
     }
 
     fun dispose() {
         scope.cancel()
-        streamManager?.stopStreaming()
+        wearablesManager?.dispose()
+        streamManager?.dispose()
         cameraManager?.stopCapture()
         nativeFrameServer?.stopServer()
         nativeFrameServer = null

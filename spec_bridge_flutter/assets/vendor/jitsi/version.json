@@ -1,0 +1,10 @@
+{
+  "release": "v2228.0.0+572f49c8",
+  "source": "https://github.com/jitsi/lib-jitsi-meet/releases/tag/v2228.0.0%2B572f49c8",
+  "artifact": "https://github.com/jitsi/lib-jitsi-meet/releases/download/v2228.0.0%2B572f49c8/lib-jitsi-meet.tgz",
+  "sha256": {
+    "lib-jitsi-meet.min.js": "c7a5432ce971600c3108a0cebd1830bf27bbb99151f8fa974d17e397049d1386",
+    "lib-jitsi-meet.e2ee-worker.js": "426165fdbba395ecda2fbfa9a72888c6865f68d4ff07f7d7d80794849ebed2a1",
+    "lib-jitsi-meet.min.js.LICENSE.txt": "8415cbf34b91632c0849fc84782d077fca5deb2340a448d2e3f6e47d77ecf850"
+  }
+}
